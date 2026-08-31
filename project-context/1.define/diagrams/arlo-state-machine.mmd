@@ -1,0 +1,36 @@
+stateDiagram-v2
+  state "Awaiting Approval" as AwaitingApproval
+
+  [*] --> Trigger
+  Trigger --> Investigating: mapping persisted spawn
+  Investigating --> AwaitingApproval: proposal persisted after Retrieval
+  Investigating --> Failed: blocking Diagnostic
+  Investigating --> Cancelled: Cancel signal
+  AwaitingApproval --> Executing: Signal approve AND hash match
+  AwaitingApproval --> Rejected: Signal reject
+  AwaitingApproval --> Cancelled: Signal cancel
+  Executing --> Done: validation pass AND Persist learned_patterns
+  Executing --> Failed: write or validation halt no Persist
+  Executing --> Cancelled: Cancel if still running no Persist
+  Rejected --> [*]
+  Done --> [*]
+  Failed --> [*]
+  Cancelled --> [*]
+
+  classDef investigating fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,font-weight:700
+  classDef awaiting fill:#fef3c7,stroke:#d97706,color:#78350f,font-weight:700
+  classDef executing fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,font-weight:700
+  classDef done fill:#d1fae5,stroke:#059669,color:#064e3b,font-weight:700
+  classDef failed fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,font-weight:700
+  classDef rejected fill:#e2e8f0,stroke:#475569,color:#1e293b,font-weight:700
+  classDef cancelled fill:#f1f5f9,stroke:#94a3b8,color:#334155,font-weight:700
+  classDef trigger fill:#e2e8f0,stroke:#64748b,color:#0f172a,font-weight:700
+
+  class Investigating investigating
+  class AwaitingApproval awaiting
+  class Executing executing
+  class Done done
+  class Failed failed
+  class Rejected rejected
+  class Cancelled cancelled
+  class Trigger trigger

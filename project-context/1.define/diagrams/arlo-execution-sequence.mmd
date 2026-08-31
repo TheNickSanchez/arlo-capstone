@@ -1,0 +1,64 @@
+sequenceDiagram
+  autonumber
+  actor User
+  participant UI as Next.js UI
+  participant API as FastAPI
+  participant PG as PostgreSQL app
+  participant MEM as learned_patterns
+  participant KB as kb_articles pgvector
+  participant T as Temporal Cluster
+  participant W as Worker / Workflow
+  participant A as Activity + Claude SDK
+  participant M as MCP Jira SNOW Jamf Intune
+  participant KBT as kb_search MCP
+
+  User->>UI: Enter ticket id and spawn
+  UI->>API: POST /instances
+  API->>PG: INSERT instance Investigating
+  API->>T: StartWorkflow ArloRemediationWorkflow
+  API-->>UI: arlo_id e.g. ARLO-680
+  T->>W: Workflow Task
+  W->>T: Schedule Activity investigate
+  T->>A: Activity Task investigate
+  Note over A,MEM: Retrieval Phase - inject into Claude context
+  A->>MEM: SELECT WHERE app_name OR platform matches ticket
+  MEM-->>A: prior patterns e.g. from ARLO-675
+  A->>KBT: kb_search query with optional category and top_k
+  KBT->>KB: vector similarity VECTOR 1536
+  KB-->>KBT: top runbook chunks
+  KBT-->>A: hits for prompt grounding
+  A->>M: Read-only vendor MCP
+  M-->>A: Ticket CHG existence assets compliance logs
+  A->>PG: Audit memory_retrieve kb_search vendor reads
+  A-->>T: Evidence pack
+  W->>T: Schedule Activity generate_proposal
+  T->>A: Activity Task generate_proposal
+  A->>PG: Store proposal and hash status Awaiting Approval
+  A-->>T: proposal_hash
+  Note over W,T: wait_condition on Signal. Workflow Task completes and worker slot is freed. No Claude session, no MCP connection.
+
+  loop Poll MVP
+    UI->>API: GET /instances and GET /instances/ARLO-680
+    API->>PG: Read metadata and audit
+    API-->>UI: Awaiting Approval plus proposal
+  end
+
+  User->>UI: Approve visible proposal and audit
+  UI->>API: POST approve with proposal_hash
+  API->>PG: INSERT approval frozen actions
+  API->>T: Signal approval_decision
+  T->>W: Workflow Task replay plus Signal
+  W->>T: Schedule Activity execute_approved
+  T->>A: Activity Task execute_approved
+  A->>A: PreToolUse PEP writes in frozen list
+  A->>M: Approved writes only
+  A->>PG: Audit per action
+  A-->>T: Execution results
+  W->>T: Schedule Activity validate_and_close
+  T->>A: Validation reads then close if approved and criteria pass
+  Note over A,MEM: Persist Phase - only on Validation success
+  A->>MEM: INSERT or increment success_count last_verified_at
+  A->>PG: status Done and audit pattern_persist
+  A-->>T: Done
+  UI->>API: GET detail
+  API-->>UI: Done

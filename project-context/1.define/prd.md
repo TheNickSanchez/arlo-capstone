@@ -15,7 +15,7 @@ This PRD defines the MVP for a multi-agent system that orchestrates **human-gate
 
 **System Description:** N/A — `project-context/1.define/system-description.md` was not produced. Operator supplied a complete product definition (persona, MCP authorized actions, HITL lifecycle, dashboard). Formal `*elicit-requirements` skipped with rationale under Assumptions.
 
-**System Concept:** One hardened agent blueprint (“ARLO”) is cloned into many durable, ticket-mapped instances (`ARLO-675`, `ARLO-676`, …). Each instance runs a stateful HITL loop: Trigger → Investigation & Research → Proposal/Summary Generation → Approval Gate Pause (agent sleeps) → Human Approves → Execution → Validation & Ticket Closure. MCP servers expose Jira, ServiceNow, Jamf, and Intune **authorized actions only** (this PRD does not specify MCP server implementation).
+**System Concept:** One hardened agent blueprint (“ARLO”) is cloned into many durable, ticket-mapped instances (`ARLO-675`, `ARLO-676`, …). Each instance runs a stateful HITL loop: Trigger → Investigation & Research → Proposal/Summary Generation → Approval Gate Pause (agent sleeps) → Human Approves → Execution → Validation & Ticket Closure. MCP servers expose Jira, ServiceNow, Jamf, Intune, and Knowledge Base (internal SOPs) **authorized actions only** (this PRD does not specify MCP server implementation).
 
 **Selected Runtime:** `claude-agent-sdk` (`aamad.config.yml` `runtime.target`). Environment variable `AAMAD_TARGET_RUNTIME` was **unset** at PRD authoring; adapter-registry would default to `crewai` if env is used without export. Build/CI **must** set `AAMAD_TARGET_RUNTIME=claude-agent-sdk` so env and config cannot diverge. Runtime constrains Phase 2 implementation conventions; it is not the product definition.
 
@@ -77,7 +77,7 @@ This PRD defines the MVP for a multi-agent system that orchestrates **human-gate
 **User Needs Analysis:**
 
 * **Critical pain points and unmet needs.**
-  * Evidence for a single ticket is scattered (ticket text, CMDB/asset, Jamf compliance/logs, Intune compliance/sync).
+  * Evidence for a single ticket is scattered (ticket text, CMDB/asset, Jamf compliance/logs, Intune compliance/sync, official SOP/runbook steps).
   * Fear of rubber-stamping AI and of silent MDM writes (OWASP LLM Excessive Agency; MRD HITL rationale remains valid for **any** high-impact tool).
   * No named, durable “run” identity matching the ticket (operators lose state when a chat ends).
   * Managers cannot see Investigating vs stuck-on-human vs Executing vs Done across the queue.
@@ -128,7 +128,7 @@ Aligned with selected runtime **`claude-agent-sdk`** (adapter: `.cursor/rules/ad
 
 * **Agent roles and responsibilities (workflow-derived).**
   * **ARLO Coordinator (per instance):** owns lifecycle phase, HITL sleep, audit events, and which MCP actions are enabled.
-  * **Investigation specialist (same instance or subagent):** read-only Jira/SNOW/Jamf/Intune authorized reads; evidence pack.
+  * **Investigation specialist (same instance or subagent):** read-only Jira/SNOW/Jamf/Intune authorized reads plus Knowledge Base `kb_search`; evidence pack grounded in official runbooks.
   * **Proposal specialist:** turns evidence into a human-reviewable summary and explicit action list (no writes).
   * **Execution specialist:** after approval token, runs **only** approved write actions.
   * **Validation specialist:** re-reads compliance/asset state; recommends ticket close/transition (writes still require the approved plan to include those ticket actions).
@@ -155,12 +155,12 @@ Aligned with selected runtime **`claude-agent-sdk`** (adapter: `.cursor/rules/ad
 * **agent:** `arlo` (blueprint)  
   * **role:** "Enterprise IT & Endpoint Remediation Specialist"  
   * **goal:** "For the mapped ticket, complete the HITL remediation loop without any unapproved endpoint or ticket mutation."  
-  * **tools (logical, not implementation):** Jira read; ServiceNow CHG query + asset read; Jamf compliance read + log fetch; Intune compliance read + device status sync; **after approval:** Jira post summary / transition / close; ServiceNow create CHG; Jamf apply approved profile or script; Intune apply approved policy or remediation.  
+  * **tools (logical, not implementation):** Jira read; ServiceNow CHG query + asset read; Jamf compliance read + log fetch; Intune compliance read + device status sync; Knowledge Base `kb_search` (read-only, Investigation); **after approval:** Jira post summary / transition / close; ServiceNow create CHG; Jamf apply approved profile or script; Intune apply approved policy or remediation.  
   * **runtime notes:** Isolated SDK session (or equivalent) per `ARLO-<id>`; write tools gated by HITL; traces to Build-phase log path with redaction; Python primary language (`aamad.config.yml`).
 
 * **agent:** `arlo-investigator` (optional subagent)  
   * **role:** "Read-only evidence gatherer"  
-  * **goal:** "Assemble ticket, asset, and device compliance/log context without mutating anything."  
+  * **goal:** "Assemble ticket, asset, device compliance/log, and official runbook context without mutating anything."  
   * **tools:** Read-only MCP authorized actions only.  
   * **runtime notes:** No write tools in `allowed_tools` at any time.
 
@@ -177,7 +177,7 @@ This subsection is **product authorization**, not MCP server design, transport, 
 **Global MCP rules:**
 
 * ARLO may only perform actions listed below. Anything not listed is **out of scope** (deny).
-* **Read** actions: allowed in **Investigation & Research** (and Validation reads) without HITL.
+* **Read** actions: allowed without HITL in the phases listed in each action’s **When allowed** column (Investigation for all reads; Validation only where specified). `kb_search` is **Investigation only**.
 * **Write / state-changing** actions: allowed **only in Execution or Validation & Ticket Closure** and **only if present on the approved proposal** for that instance.
 
 ##### Jira (work-item system of record, with ServiceNow as alternate trigger)
@@ -213,11 +213,19 @@ This subsection is **product authorization**, not MCP server design, transport, 
 | Sync device status | Read-side refresh (MVP) | Investigation, Validation | Refresh latest device/compliance view; not a remediation |
 | Apply approved policies or remediations | Write | After HITL, **only** the policy/remediation identifiers in the approved plan | Remediate Windows/mobile endpoint state |
 
-**Explicitly unauthorized (non-exhaustive, MVP deny):** wipe/retire/delete device; lock/lost-mode; disable account; rotate secrets; dump credentials; export full disk; change IdP groups; modify firewall/network gear; run arbitrary unsigned scripts not named in the approved plan; expand scope to devices not identified in the ticket/proposal.
+##### Knowledge Base (Internal SOPs)
+
+Read-only integration. No Knowledge Base write, edit, delete, or publish actions are authorized.
+
+| Action | Type | When allowed | Purpose |
+|---|---|---|---|
+| `kb_search` | Read | Investigation | Query official company runbooks/SOPs so proposals are grounded in documented procedures rather than invented steps |
+
+**Explicitly unauthorized (non-exhaustive, MVP deny):** wipe/retire/delete device; lock/lost-mode; disable account; rotate secrets; dump credentials; export full disk; change IdP groups; modify firewall/network gear; run arbitrary unsigned scripts not named in the approved plan; expand scope to devices not identified in the ticket/proposal; create/update/delete Knowledge Base articles or treat `kb_search` hits as an execution command.
 
 #### 3.5 Integration Requirements
 
-* **Required external services (logical).** Jira; ServiceNow; Jamf; Intune; LLM provider for the selected runtime (secret **name** `ANTHROPIC_API_KEY` and optional org gateway/base URL per adapter — values never in artifacts).
+* **Required external services (logical).** Jira; ServiceNow; Jamf; Intune; Knowledge Base (internal SOPs, `kb_search` only); LLM provider for the selected runtime (secret **name** `ANTHROPIC_API_KEY` and optional org gateway/base URL per adapter — values never in artifacts).
 * **Database and storage (MVP).** Durable store for: instance id, mapped ticket (system + key), phase/status, proposal document, approval/rejection record (actor, timestamp, rationale), audit log events, artifact links. Local/project store is sufficient for capstone; multi-tenant SaaS deferred.
 * **Authentication and security.** Secrets only via environment (`.env.example` names). Least-privilege tokens per system. `security.require_security_assessment: true` — `@security.eng` assessment required before Deliver. No secrets in Prompt Trace, Jira comments, CHG text, or audit UI.
 * **Performance and scalability targets.** See §5. MVP: demonstrate **≥2 concurrent** isolated instances; document a configurable max-concurrency cap.
@@ -226,7 +234,7 @@ This subsection is **product authorization**, not MCP server design, transport, 
 
 * **Cloud / hosting (MVP).** Smallest AAMAD-appropriate target: local or single-service/compose. No live production deploy without operator authorization (Deliver-phase rule).
 * **Compute and memory.** Laptop/dev-class sufficient; cost driver is LLM tokens × concurrent instances, not cluster size.
-* **Network and security.** Outbound to Jira, ServiceNow, Jamf, Intune, and model gateway only as configured. Fail closed if a required MCP/tool is unauthorized or unavailable (Diagnostic; do not skip HITL).
+* **Network and security.** Outbound to Jira, ServiceNow, Jamf, Intune, Knowledge Base, and model gateway only as configured. Fail closed if a required MCP/tool is unauthorized or unavailable (Diagnostic; do not skip HITL).
 * **Monitoring and logging.** Instance lifecycle telemetry is a **product feature**: spawn, phase changes, tool attempts, policy denies, HITL wait, approve/reject, execution results, validation, close, fail, cancel. Persist traces under `project-context/2.build/logs` during Build; redact secrets.
 
 ---
@@ -252,7 +260,7 @@ Trigger (New Jira/SNOW ticket)
 | Phase | Status shown in UI (P0 labels) | Agent behavior | Allowed MCP classes | Exit criteria |
 |---|---|---|---|---|
 | **Trigger** | (ephemeral → Investigating) | Bind instance `ARLO-<id>` to exactly one ticket (Jira **or** ServiceNow) | None required | Mapping persisted; run visible on the grid |
-| **Investigation & Research** | **Investigating** | Gather evidence; reason in audit log | **Reads only** (Jira context; SNOW existing CHG + assets; Jamf compliance + logs; Intune compliance + status sync) | Evidence pack complete or halt with Diagnostic if blocking reads fail |
+| **Investigation & Research** | **Investigating** | Gather evidence; reason in audit log | **Reads only** (Jira context; SNOW existing CHG + assets; Jamf compliance + logs; Intune compliance + status sync; Knowledge Base `kb_search`) | Evidence pack complete or halt with Diagnostic if blocking reads fail |
 | **Proposal / Summary Generation** | **Investigating** (until proposal persisted) | Produce human-reviewable summary + **explicit action list** (each action maps to an authorized write in §3.4) | Reads if needed; **no writes** | Proposal stored on the instance |
 | **Approval Gate Pause** | **Awaiting Approval** | **Agent sleeps.** No tool writes. No countdown-to-auto-approve. Durable across restart | None (writes) | Human **Approve** or **Reject** (or Cancel) |
 | **Human Approves** | **Awaiting Approval** → **Executing** | Record approver identity, timestamp, and the frozen approved action list | None until record committed | Approval record exists and matches proposal hash/id |
@@ -278,17 +286,17 @@ Trigger (New Jira/SNOW ticket)
 
 ##### FR-P0-02 — Read-only investigation
 
-* **User story:** As an MDM Administrator, I want ARLO to research ticket, asset, and device evidence without changing anything, so that I can trust the proposal.
+* **User story:** As an MDM Administrator, I want ARLO to research ticket, asset, device, and official runbook evidence without changing anything, so that I can trust the proposal.
 * **Acceptance criteria:**
-  1. During **Investigating**, only §3.4 **Read** (and Intune sync-as-refresh) actions occur.
+  1. During **Investigating**, only §3.4 **Read** (and Intune sync-as-refresh) actions occur, including Knowledge Base `kb_search`.
   2. QA can verify (logs/policy) that write tools are not invoked in this phase.
-  3. Partial MCP failure (e.g. Jamf down, ticket is Windows) does not authorize skipping HITL; instance may continue with declared evidence gaps in the proposal or halt with Diagnostic per SAD — must not invent device state.
+  3. Partial MCP failure (e.g. Jamf down, ticket is Windows, KB miss) does not authorize skipping HITL; instance may continue with declared evidence gaps in the proposal or halt with Diagnostic per SAD — must not invent device state or undocumented SOP steps.
 
 ##### FR-P0-03 — Proposal / discovery summary generation
 
 * **User story:** As an MDM Administrator, I want a single proposal that lists evidence, intended MCP writes, and validation checks, so that I can approve or reject without opening four consoles first.
 * **Acceptance criteria:**
-  1. Proposal includes: ticket key; targeted asset/device identifiers; findings from authorized reads; **enumerated write actions** (system, action type, target ids); expected validation; residual risk / unknowns.
+  1. Proposal includes: ticket key; targeted asset/device identifiers; findings from authorized reads (including `kb_search` runbook citations when hits exist); **enumerated write actions** (system, action type, target ids); expected validation; residual risk / unknowns.
   2. Proposal is stored on the instance **before** sleep.
   3. Posting that summary **to Jira** is a **write** and must not occur until HITL (FR-P0-05).
 
@@ -519,12 +527,15 @@ N/A for this capstone/internal MVP. No pricing, packaging, or sales motion. Oper
 7. Tanium, AI Agent for ServiceNow overview — investigate / recommend / human-initiated deploy pattern (analog, not a requirement to integrate Tanium). https://help.tanium.com/bundle/tanium-ai-agent-for-servicenow/page/ServiceNow_Integrations/AIAgentForServiceNow/overview.htm
 8. Tanium ITX / Autonomous IT for ServiceNow materials — ITSM + endpoint closed-loop positioning; CHG-aligned remediations as industry narrative.
 9. OWASP Top 10 for LLM Applications (Excessive Agency / human approval for high-impact actions) — via MRD citations.
+10. Operator amendment (2026-08-31): add Knowledge Base (Internal SOPs) to PRD §3.4 as an authorized **read-only** MCP integration; authorized action `kb_search` during Investigation to ground proposals in official company runbooks.
 
 ## Assumptions
 
 - **MRD skip/partial:** MRD exists but targeted AppSec code remediation. This PRD **supersedes MRD product domain**. Later personas must follow this PRD for scope. MRD skip-equivalent rationale for AppSec TAM in §2: wrong category after operator pivot.
 - **System description skipped:** Operator provided the four required product blocks in the `*create-prd` request; a separate elicitation questionnaire was not required to avoid conflicting artifacts.
-- HITL applies to **all** §3.4 writes, including Jira discovery-summary posts, ticket transitions, closes, and ServiceNow CHG **create**. Investigation is read-only (+ Intune status sync as refresh).
+- HITL applies to **all** §3.4 writes, including Jira discovery-summary posts, ticket transitions, closes, and ServiceNow CHG **create**. Investigation is read-only (+ Intune status sync as refresh + Knowledge Base `kb_search`).
+- `kb_search` is **read-only**. A runbook hit grounds the proposal; it does not authorize execution, expand write scope, or bypass HITL. Missing KB results are declared evidence gaps — ARLO must not invent SOP steps.
+- Knowledge Base product, corpus location, and MCP binding are implementation concerns for SAD/backend. This PRD authorizes the action only.
 - “Agent sleeps” is a **durable orchestrated pause**, not process termination without state.
 - Instance naming `ARLO-675` is an example of the `ARLO-<id>` scheme; sequential integers are sufficient for MVP (need not equal the Jira key).
 - Trigger is **user-initiated spawn** mapped to an **existing** ticket (Jira or ServiceNow). Tickets are not created by ARLO in MVP.
@@ -532,7 +543,7 @@ N/A for this capstone/internal MVP. No pricing, packaging, or sales motion. Oper
 - “Approved configuration profiles or scripts” / “approved policies or remediations” means **approved in the ARLO HITL proposal**, not a separate undocumented MDM pre-approval catalog (though orgs may constrain IDs in SAD).
 - Runtime: config `claude-agent-sdk`; env `AAMAD_TARGET_RUNTIME` unset at authoring — Build must export it.
 - Language Python; no CrewAI YAML as MVP runtime.
-- Capstone may use stubs/sandboxes for Jamf/Intune/Jira/SNOW if production tenants are unavailable; stubs must still obey HITL (no fake success that hides skipped gates).
+- Capstone may use stubs/sandboxes for Jamf/Intune/Jira/SNOW/Knowledge Base if production tenants are unavailable; stubs must still obey HITL (no fake success that hides skipped gates). `kb_search` stubs return fixture runbooks only.
 - Merge/wipe/identity/network actions are out of scope.
 - GTM §9 is N/A (internal/capstone).
 - Approver role: any authenticated ARLO user in MVP unless SAD tightens (Open Question).
@@ -553,6 +564,8 @@ N/A for this capstone/internal MVP. No pricing, packaging, or sales motion. Oper
 12. EU AI Act applicability if demo uses EU personal device data.
 13. Language: remain Python vs TypeScript Claude Agent SDK (config says Python).
 14. MRD AppSec/git loop: archive as P2 only, or did stakeholders intend a **combined** IT + AppSec product? **PRD assumes IT/endpoint only.**
+15. Knowledge Base host (Confluence, SharePoint, file corpus, or stub), citation fields required on the proposal, and whether `kb_search` may also run during Proposal / Summary Generation. **PRD default: Investigation phase only.**
+16. `@system.arch` should refresh SAD/SFS MCP maps to include `kb_search`; this persona did not edit `sad.md`.
 
 ## Audit
 
@@ -568,3 +581,16 @@ N/A for this capstone/internal MVP. No pricing, packaging, or sales motion. Oper
 - **Write method:** temp-write `prd.md.tmp` then atomic replace to `prd.md`.
 - **Prohibited actions honored:** no application code; no SAD/SFS/Build/Deliver edits; no MCP implementation specs; no invented market TAM for endpoint UEM; MRD/domain conflict recorded under Assumptions and Open Questions.
 - **Self-check (required headings):** Executive Summary; Market Context & User Analysis; Technical Requirements & Architecture (including Agent Persona & Scope, Core Agent Definitions, MCP Integration Scope); Functional Requirements (including Stateful Remediation Lifecycle and Dashboard Requirements); Non-Functional Requirements; User Experience Design; Success Metrics & KPIs; Implementation Strategy; Launch & Go-to-Market Strategy; Quality Assurance Checklist; Sources; Assumptions; Open Questions; Audit.
+
+### Audit — MCP scope amendment (`kb_search`)
+
+- **Timestamp:** 2026-08-31T23:41:14Z (operator local 2026-08-31 16:41 PDT)
+- **Persona id:** `product-mgr`
+- **Action:** update PRD §3.4 MCP Integration Scope (operator-requested amendment; not a full `*create-prd` replay)
+- **Output path:** `project-context/1.define/prd.md`
+- **Resolved `AAMAD_TARGET_RUNTIME`:** `claude-agent-sdk` via `aamad.config.yml` `runtime.target`; shell env **unset**
+- **Config loaded:** `aamad.config.yml`
+- **Change:** Authorized **Knowledge Base (Internal SOPs)** as a read-only MCP integration; action `kb_search` during Investigation to ground proposals in official company runbooks. Aligned §3.2–3.5, lifecycle Investigation reads, FR-P0-02/03, Sources, Assumptions, and Open Questions. No write/edit/delete KB actions added.
+- **Prompt Trace:** omitted. Define-phase amendment; no runtime execution; no secrets.
+- **Write method:** in-place section updates on `prd.md` (surgical amendment; full rewrite not required).
+- **Prohibited actions honored:** no application code; no SAD/SFS/Build/Deliver edits; no MCP implementation specs.

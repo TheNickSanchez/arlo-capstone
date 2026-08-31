@@ -1,0 +1,72 @@
+%%{init: {"flowchart": {"htmlLabels": true}} }%%
+flowchart TB
+  subgraph Client["Operator browser"]
+    UI["Next.js / React dashboard<br/>grid · detail · audit · Approve/Reject"]
+  end
+
+  subgraph ControlPlane["ARLO control plane"]
+    API["FastAPI backend<br/>auth · spawn · signals · webhooks · reads"]
+    PG[("PostgreSQL application schema<br/>users · instances · approvals · audit_events")]
+    MEM[("Shared Operational Memory<br/>learned_patterns")]
+    KB[("Vector KB pgvector<br/>kb_articles embedding 1536")]
+  end
+
+  subgraph Orchestration["Temporal cluster"]
+    TC["Temporal Server<br/>event history · task queues"]
+  end
+
+  subgraph WorkerPlane["Temporal Worker process"]
+    WF["Workflow: ArloRemediationWorkflow<br/>deterministic control flow only"]
+    ACT["Activities: Claude Agent SDK<br/>investigate · propose · execute · validate"]
+    PEP["PreToolUse PEP<br/>deny writes unless approval record"]
+  end
+
+  subgraph MCP["MCP servers — authorized actions only"]
+    JIRA["Jira MCP"]
+    SNOW["ServiceNow MCP"]
+    JAMF["Jamf MCP"]
+    INTUNE["Intune MCP"]
+    KBTOOL["Internal kb_search MCP<br/>vector similarity on kb_articles"]
+  end
+
+  LLM["Anthropic API / org gateway"]
+  EMB["Embedding API<br/>OpenAI-compatible 1536-d"]
+
+  UI -->|"HTTPS JSON + poll"| API
+  API -->|"read/write metadata"| PG
+  API -->|"Start Workflow"| TC
+  API -->|"Signal approval_decision"| TC
+  API -->|"optional webhook → Signal"| TC
+  TC -->|"Workflow Task"| WF
+  WF -->|"schedule Activity"| TC
+  TC -->|"Activity Task"| ACT
+  ACT --> PEP
+  ACT -->|"MCP client"| JIRA
+  ACT -->|"MCP client"| SNOW
+  ACT -->|"MCP client"| JAMF
+  ACT -->|"MCP client"| INTUNE
+  ACT -->|"kb_search + auto inject"| KBTOOL
+  KBTOOL --> KB
+  ACT -->|"match app_name / platform"| MEM
+  ACT -->|"persist on Validation Done"| MEM
+  EMB -.->|"index / query embeddings"| KB
+  ACT -->|"model + tools"| LLM
+  ACT -->|"upsert instance + append audit"| PG
+
+  classDef ui fill:#dbeafe,stroke:#2563eb,color:#0f172a
+  classDef store fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef memory fill:#d1fae5,stroke:#059669,color:#064e3b
+  classDef kb fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+  classDef temporal fill:#e0e7ff,stroke:#4338ca,color:#1e1b4b
+  classDef worker fill:#cffafe,stroke:#0891b2,color:#164e63
+  classDef mcp fill:#fce7f3,stroke:#db2777,color:#831843
+  classDef ext fill:#f1f5f9,stroke:#64748b,color:#0f172a
+
+  class UI,API ui
+  class PG store
+  class MEM memory
+  class KB,KBTOOL kb
+  class TC,WF temporal
+  class ACT,PEP worker
+  class JIRA,SNOW,JAMF,INTUNE mcp
+  class LLM,EMB ext
