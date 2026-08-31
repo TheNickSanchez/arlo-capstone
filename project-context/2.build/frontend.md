@@ -1,67 +1,102 @@
-# Frontend epic: ARLO (backlog)
+# Frontend epic: ARLO dashboard (mock-backed)
 
-**Document type:** AAMAD frontend epic specification  
-**Status:** Backlog — not implemented  
+**Document type:** AAMAD frontend epic  
+**Product:** ARLO — Automated Remediation Loop Orchestrator  
+**Phase:** 2 Build  
 **Owner persona:** `@frontend.eng` (`frontend-eng`)  
-**Depends on:** `project-context/2.build/setup.md` (complete)  
-**Action when executing:** `*develop-fe` then `*document-frontend`
+**Date:** 2026-08-31  
+**Status:** Complete for UI epic (mock data; FastAPI unwired)  
+**Action:** `*develop-fe` + `*add-placeholders` + `*style-ui` + `*document-frontend`
 
-Replace this backlog with implementation records. Keep Sources, Assumptions, Open Questions, and Audit.
+## Purpose
 
-## Scope (SAD-authoritative)
+Implement the MVP **control-plane dashboard** (not a chat thread) from SAD §3 and PRD §4.3 / §6, using in-memory mock services so the HITL loop is demonstrable without `@integration.eng`.
 
-This is a **control-plane dashboard**, not a chat thread. Generic persona “chat UI + Tailwind” does not apply. Follow SAD §3 and `aamad.config.yml`: `ui.theme: system`, `visual_style: minimal`, `prefer_modals: false`. Use CSS modules (or equivalent). Do not add a vendor UI kit. `lucide-react` is installed for icons if needed.
+Operator-facing contract: root `frontend-functional-spec.md` (workflow **ARLO Endpoint Remediation Workflow**).
 
-Do not wire FastAPI. Leave data as local placeholders. `@integration.eng` owns `lib/api` calls.
+## What was built
 
-## Routes (already scaffolded)
+### Routes
 
-| Route | Purpose |
+| Route | Implementation |
 |---|---|
-| `/` | Run grid + spawn control |
-| `/runs/[arloId]` | Detail: status, proposal, Approve/Reject, audit |
-| `/login` | Authenticated users; no anonymous Approve |
+| `/` | Spawn (Inputs), **Active Agents**, focused Run banner + controls, Results, **Run History** |
+| `/runs/[arloId]` | Instance detail: status, sleep banner, Approve/Reject/Reset, proposal, audit |
+| `/login` | Visible stub; fields disabled; copy that session auth is for integration |
 
-## Tasks (sequential within this epic)
+### Components
 
-1. **Shell / layout** — Desktop-width first; system theme; keyboard-operable actions.
-2. **`RunGrid`** — All runs (active + historical): `ARLO-<id>`, ticket id, status text (not color-only), created/updated, link to detail. Filter/pagination enough; no delete UX.
-3. **`SpawnPanel`** — Jira or ServiceNow ticket id; in-page error on empty/invalid; copy: **no endpoint or ticket mutation until you approve**.
-4. **`StatusBadge`** — Exact labels: **Investigating**, **Awaiting Approval**, **Executing**, **Done**, plus **Rejected**, **Failed**, **Cancelled**.
-5. **`ProposalPanel` + `ApprovalActions` + `AuditTimeline`** — Same view; Approve/Reject in-page (not modal-first); Approve disabled unless proposal + audit visible and status is Awaiting Approval.
-6. **`BannerSleeping`** — Persistent on Awaiting Approval: agent is sleeping; **no endpoint or ticket changes until you approve.**
-7. **Poll hook (UI-only)** — Client poll interval 2–5s against placeholder state until integration; no full-page rewrite.
-8. **P1 placeholders (visible, non-functional)** — webhook auto-spawn, KEV badges, request-changes, audit export, chat-inside-instance.
+`AppShell`, `Dashboard`, `SpawnPanel`, `StatusBanner`, `StatusBadge`, `BannerSleeping`, `ApprovalActions`, `ProposalPanel`, `AuditTimeline`, `RunGrid`, `FleetActionBanner`, `FutureWorkStubs`, `RunDetailView`.
 
-## Out of scope
+Styling: `app/globals.css` + `styles/dashboard.module.css`. System theme (`color-scheme: light dark`), minimal panels, **no vendor UI kit**, **no Tailwind**. `lucide-react` unused. `prefer_modals: false` — Approve/Reject are in-page.
 
-Temporal, MCP, Anthropic SDKs in the browser. Mobile. Batch approve. Functional API calls.
+### Mock layer
 
-## Handoff
+`frontend/lib/services.ts` (no `fetch`):
 
-Export component and status-type contracts for `@integration.eng`. Keep `frontend/lib/api.ts` as the only HTTP boundary.
+- `startRun(ticketId, ticketSystem)` → `{ arlo_id }` starting at **ARLO-675**
+- `getRunStatus(arloId)` advances `investigating` → `awaiting_approval`, then **halts** until approve; after approve, `executing` → `done`
+- `approveRun(arloId, proposalHash)` → `executing` when hash matches
+
+`frontend/lib/api.ts` still exports `API_BASE` only.
+
+### FSM and a11y
+
+Phases: `idle` \| `investigating` \| `awaiting_approval` \| `executing` \| `done` \| `error`, plus `rejected` / `cancelled` for PRD labels. Pills: gray / blue / yellow / green / red **and** text labels (Investigating, Awaiting Approval, Executing, Done, Failed, Rejected, Cancelled). Native labelled inputs and buttons; `:focus-visible`; skip link; `aria-live` on the status banner.
+
+P1 placeholders (disabled): webhook auto-spawn, KEV/SLA badges, request-changes, audit export, chat-inside-instance.
+
+## Out of scope (honored)
+
+Temporal, MCP, Anthropic SDKs in the browser. Live FastAPI calls. Mobile layout. Batch approve. Functional login.
+
+## Handoff to `@integration.eng`
+
+Replace mock `services.ts` with `lib/api.ts` clients for SAD §4 (`POST /instances`, GET list/detail/audit, POST approve/reject). Keep poll interval 2–5s. Surface 409 stale `proposal_hash`. Wire `/login` so Approve is not available anonymously.
+
+## Traceability notes (runtime)
+
+Selected runtime `claude-agent-sdk` does not change the UI: no LLM token streaming to the browser (SAD). HITL sleep is displayed as a banner; durability is backend/Temporal.
 
 ## Sources
 
-1. `project-context/1.define/sad.md` §3, UI-P0 mapping.
-2. `project-context/1.define/prd.md` §4.3, §6.
+1. `project-context/1.define/prd.md` §4.3, §6.
+2. `project-context/1.define/sad.md` §3, AD-5, AD-11, state machine.
 3. `project-context/2.build/setup.md`.
-4. `aamad.config.yml` UI keys.
-5. `.cursor/agents/frontend-eng.md` (commands only; SAD overrides chat/Tailwind).
+4. `aamad.config.yml` UI + coding_standards.
+5. `.cursor/agents/frontend-eng.md`.
+6. `frontend-functional-spec.md`.
 
 ## Assumptions
 
-- Placeholder pages in `frontend/app` are layout only.
-- Auth UX is `/login`; mechanism (cookie vs bearer) is defined by `@backend.eng` and wired by `@integration.eng`.
+- SAD overrides the generic persona “chat UI + Tailwind”.
+- Mock store is process/module memory; full reload reseeds history (`ARLO-673`, `ARLO-674`).
+- Mock approver `demo-operator` until auth is wired.
+- Duplicate active ticket spawn blocked (SAD default 409).
 
 ## Open Questions
 
-Who may Approve (hides actions later). Chat-inside-instance remains a visible stub.
+1. Approve ACL (PRD Open Question 2).
+2. Cancel control vs status-only in this mock.
+3. Cookie vs bearer — backend epic.
 
 ## Audit
 
-- **Timestamp:** 2026-08-31T21:20:00Z
-- **Persona id:** `project-mgr` (backlog only; implementation Audit will be `frontend-eng`)
-- **Action:** `document-setup` (epic backlog)
-- Resolved AAMAD_TARGET_RUNTIME: claude-agent-sdk (UI has no runtime SDK; recorded for adapter consistency)
-- **Prompt Trace:** omitted (no runtime agent execution)
+- **Timestamp:** 2026-08-31T21:57:53Z
+- **Persona id:** `frontend-eng`
+- **Action:** `develop-fe` / `document-frontend`
+- **Output path:** `project-context/2.build/frontend.md`
+- **Resolved AAMAD_TARGET_RUNTIME:** `claude-agent-sdk` (no UI SDK; recorded for adapter consistency)
+- **Config loaded:** `aamad.config.yml`
+- **Tool usage:** Read (persona, PRD, SAD, setup, frontend backlog, existing `frontend/app` scaffold); Write (spec, mock services, components, CSS, routes); Shell (`npm run dev`, UTC clock).
+- **Prompt Trace:** omitted. No runtime agent execution; no secrets in UI copy.
+- **Model / temperature / max_tokens:** Cursor Grok 4.6 interactive session; IDE-controlled.
+- **Prohibited actions honored:** no backend connection; P1 features visual stubs only.
+
+- **Timestamp:** 2026-08-31T22:52:50Z
+- **Persona id:** `frontend-eng`
+- **Action:** `develop-fe` / `document-frontend` (Active Fleet vs Run History split)
+- **Output path:** `project-context/2.build/frontend.md`
+- **Resolved AAMAD_TARGET_RUNTIME:** `claude-agent-sdk`
+- **Prompt Trace:** omitted (UI layout only).
+- **Notes:** Single History table replaced by **Active Agents** (`investigating` / `awaiting_approval` / `executing`) and Run History (`done` / `rejected` / `error`=Failed / `cancelled`). Action-required banner + Review Proposal on awaiting-approval rows. Empty copy: “No active agents in flight.” Card title renamed from Active Fleet to Active Agents.
