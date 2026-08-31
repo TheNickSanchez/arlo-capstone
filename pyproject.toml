@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arlo"
+version = "0.1.0"
+description = "ARLO — Automated Remediation Loop Orchestrator (API + Temporal worker)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "claude-agent-sdk",
+  "fastapi",
+  "temporalio",
+  "uvicorn[standard]",
+  "asyncpg",
+  "pydantic>=2",
+  "pydantic-settings>=2",
+  "sqlalchemy>=2",
+  "alembic",
+  "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "httpx",
+  "ruff",
+]
+
+[tool.setuptools.packages.find]
+include = ["backend*", "worker*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["backend", "worker"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

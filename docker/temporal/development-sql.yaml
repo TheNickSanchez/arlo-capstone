@@ -1,0 +1,8 @@
+# Temporal dynamic config for local SQL persistence (dev cluster).
+# Limit: frontend.rps is generous for capstone; do not use in production.
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true
+    constraints: {}

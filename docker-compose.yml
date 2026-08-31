@@ -1,0 +1,145 @@
+# SAD §5 Compose topology: frontend, api, worker, postgres, temporal (+ Temporal UI).
+# Optional LiteLLM proxy: docker compose --profile litellm up
+# App processes: docker compose --profile app up  (after @backend.eng / @frontend.eng implement entrypoints)
+#
+# Runtime pin is hardcoded on api/worker. Do not omit AAMAD_TARGET_RUNTIME.
+# No live production deploy. Local/dev only.
+
+name: arlo
+
+x-arlo-runtime: &arlo-runtime
+  AAMAD_TARGET_RUNTIME: claude-agent-sdk
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-arlo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arlo}
+      POSTGRES_DB: ${POSTGRES_DB:-arlo}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - arlo_pg_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arlo} -d ${POSTGRES_DB:-arlo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  temporal:
+    image: temporalio/auto-setup:1.27.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-arlo}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD:-arlo}
+      - POSTGRES_SEEDS=postgres
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    ports:
+      - "7233:7233"
+    volumes:
+      - ./docker/temporal/development-sql.yaml:/etc/temporal/config/dynamicconfig/development-sql.yaml:ro
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    ports:
+      - "8088:8080"
+
+  api:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    env_file:
+      - .env
+    environment:
+      <<: *arlo-runtime
+      DATABASE_URL: postgresql://${POSTGRES_USER:-arlo}:${POSTGRES_PASSWORD:-arlo}@postgres:5432/${POSTGRES_DB:-arlo}
+      TEMPORAL_ADDRESS: temporal:7233
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-http://litellm:4000}
+      ARLO_SESSION_SECRET: ${ARLO_SESSION_SECRET:-}
+      ARLO_TASK_QUEUE: ${ARLO_TASK_QUEUE:-arlo-activities}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    env_file:
+      - .env
+    environment:
+      <<: *arlo-runtime
+      DATABASE_URL: postgresql://${POSTGRES_USER:-arlo}:${POSTGRES_PASSWORD:-arlo}@postgres:5432/${POSTGRES_DB:-arlo}
+      TEMPORAL_ADDRESS: temporal:7233
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-http://litellm:4000}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-5}
+      ARLO_TASK_QUEUE: ${ARLO_TASK_QUEUE:-arlo-activities}
+      JIRA_MCP_URL: ${JIRA_MCP_URL:-}
+      JIRA_MCP_TOKEN: ${JIRA_MCP_TOKEN:-}
+      SNOW_MCP_URL: ${SNOW_MCP_URL:-}
+      SNOW_MCP_TOKEN: ${SNOW_MCP_TOKEN:-}
+      JAMF_MCP_URL: ${JAMF_MCP_URL:-}
+      JAMF_MCP_TOKEN: ${JAMF_MCP_TOKEN:-}
+      INTUNE_MCP_URL: ${INTUNE_MCP_URL:-}
+      INTUNE_MCP_TOKEN: ${INTUNE_MCP_TOKEN:-}
+      JIRA_MCP_STDIO_CMD: ${JIRA_MCP_STDIO_CMD:-}
+      SNOW_MCP_STDIO_CMD: ${SNOW_MCP_STDIO_CMD:-}
+      JAMF_MCP_STDIO_CMD: ${JAMF_MCP_STDIO_CMD:-}
+      INTUNE_MCP_STDIO_CMD: ${INTUNE_MCP_STDIO_CMD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+
+  frontend:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  litellm:
+    profiles: ["litellm"]
+    image: ghcr.io/berriai/litellm:main-latest
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./docker/litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      LITELLM_UPSTREAM_ANTHROPIC_API_KEY: ${LITELLM_UPSTREAM_ANTHROPIC_API_KEY:-}
+
+volumes:
+  arlo_pg_data:

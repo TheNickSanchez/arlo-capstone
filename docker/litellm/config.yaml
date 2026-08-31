@@ -1,0 +1,14 @@
+# LiteLLM proxy config (local/dev). No secret values.
+# Upstream Anthropic key is LITELLM_UPSTREAM_ANTHROPIC_API_KEY on the container.
+# Worker/API send ANTHROPIC_API_KEY as the LiteLLM virtual key (or master key in local mode).
+#
+# Docs: https://docs.litellm.ai/docs/proxy/configs
+
+model_list:
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/LITELLM_UPSTREAM_ANTHROPIC_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
