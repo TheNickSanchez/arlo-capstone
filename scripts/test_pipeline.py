@@ -12,6 +12,12 @@ Jira-only analysis (live Cloud): inspect ticket, Claude analysis, comment, stop.
 
 Requires `ARLO_JIRA_ANALYSIS_ONLY=true`, live Atlassian credentials, API + worker restart.
 
+Discovery + proposal (beta-prod): investigate MDM, post ADF proposal comment, wait at HITL.
+
+    python scripts/test_pipeline.py --beta-prod --ticket-id CPE-4297
+
+Requires `ARLO_JIRA_BETA_PROD=true`, API + worker restart. Instance stays Awaiting Approval.
+
 Prerequisites (from repo root):
 
     docker compose up -d postgres temporal
@@ -164,11 +170,21 @@ def _fixture_comment_bodies(ticket_id: str) -> list[str]:
     return [str(c.get("body", "")) for c in ticket.get("comments", [])]
 
 
-async def run(ticket_id: str, *, analysis: bool) -> None:
+async def run(ticket_id: str, *, analysis: bool, beta_prod: bool = False) -> None:
     print("==> running Alembic migrations")
     run_upgrade_head()
 
-    if analysis:
+    if beta_prod:
+        if not settings.arlo_jira_beta_prod:
+            raise PipelineError(
+                "ARLO_JIRA_BETA_PROD is false. Set it true in `.env` and restart the API + worker."
+            )
+        if settings.claude_model == "claude-sonnet-4-5":
+            print(
+                "==> warning: CLAUDE_MODEL=claude-sonnet-4-5 is often blocked by the hub; "
+                "prefer claude-sonnet-4-5-20250929"
+            )
+    elif analysis:
         if not settings.arlo_jira_analysis_only:
             raise PipelineError(
                 "ARLO_JIRA_ANALYSIS_ONLY is false. Set it true in `.env` and restart the API + worker."
@@ -214,6 +230,29 @@ async def run(ticket_id: str, *, analysis: bool) -> None:
             raise PipelineError("instance ticket mapping mismatch")
         if not instance.workflow_id:
             raise PipelineError("workflow_id missing on instance row")
+
+    if beta_prod:
+        print("==> waiting for generate_proposal + post_proposal_comment (HITL pause)")
+        await _poll_audit(arlo_id, "proposal_generated", timeout=_ANALYSIS_POLL_SECONDS)
+        event = await _poll_audit(arlo_id, "jira_proposal_comment", timeout=_ANALYSIS_POLL_SECONDS)
+        payload = event.payload_json or {}
+        print(f"==> audit jira_proposal_comment result={event.result} summary={event.summary}")
+        if event.result != "success":
+            raise PipelineError(f"proposal comment did not post: {event.summary} payload={payload}")
+        async with session_scope() as session:
+            instance = await session.get(Instance, arlo_id)
+            if instance is None or instance.status != "Awaiting Approval":
+                raise PipelineError(
+                    f"expected Awaiting Approval after beta-prod, "
+                    f"got {instance.status if instance else None!r}"
+                )
+            if not instance.proposal_hash:
+                raise PipelineError("proposal_hash missing after generate_proposal")
+        print(
+            f"OK beta-prod paused at HITL instance={arlo_id} ticket={ticket_id} "
+            f"comment_id={payload.get('comment_id')} url={payload.get('url')}"
+        )
+        return
 
     if analysis:
         print("==> waiting for inspect_and_comment (Jira read + analysis comment)")
@@ -269,14 +308,24 @@ def main() -> None:
         help="Jira-only inspect + analysis comment (live Cloud). Stops before HITL/execution.",
     )
     parser.add_argument(
+        "--beta-prod",
+        action="store_true",
+        help="Discovery + proposal comment, then pause at Awaiting Approval.",
+    )
+    parser.add_argument(
         "--ticket-id",
         default=None,
-        help="Jira key to map. Default JIRA-PIPE-<epoch> (smoke) or CPE-4297 (--analysis).",
+        help="Jira key to map. Default JIRA-PIPE-<epoch> (smoke) or CPE-4297 (--analysis/--beta-prod).",
     )
     args = parser.parse_args()
-    ticket_id = args.ticket_id or ("CPE-4297" if args.analysis else f"JIRA-PIPE-{int(time.time())}")
+    if args.analysis and args.beta_prod:
+        print("FAIL use either --analysis or --beta-prod, not both", file=sys.stderr)
+        sys.exit(2)
+    ticket_id = args.ticket_id or (
+        "CPE-4297" if (args.analysis or args.beta_prod) else f"JIRA-PIPE-{int(time.time())}"
+    )
     try:
-        asyncio.run(run(ticket_id, analysis=args.analysis))
+        asyncio.run(run(ticket_id, analysis=args.analysis, beta_prod=args.beta_prod))
     except PipelineError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         sys.exit(1)

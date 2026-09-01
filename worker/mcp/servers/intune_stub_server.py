@@ -24,6 +24,12 @@ _SEED: dict[str, Any] = {
         }
     },
     "applied_policies": [],
+    "catalog": {
+        "policies": ["BitLocker-Enforce", "Windows-Update-Ring"],
+        "groups": ["Windows-Managed", "BitLocker-NonCompliant"],
+        "scripts": ["remediate-bitlocker.ps1"],
+        "extension_attributes": [],
+    },
 }
 
 
@@ -44,9 +50,10 @@ def intune_read_compliance(device_id: str) -> dict[str, Any]:
     """Read device compliance and policy posture (read)."""
     data = _store()
     device = data["devices"].get(device_id)
+    catalog = data.get("catalog") or _SEED["catalog"]
     if device is None:
-        return {"found": False, "device_id": device_id}
-    return {"found": True, "device_id": device_id, **device}
+        return {"found": False, "device_id": device_id, "catalog": catalog}
+    return {"found": True, "device_id": device_id, "catalog": catalog, **device}
 
 
 @app.tool()
@@ -54,11 +61,12 @@ def intune_sync_device(device_id: str) -> dict[str, Any]:
     """Read-side refresh of the latest device/compliance view (SAD AD-12: not a remediation)."""
     data = _store()
     device = data["devices"].get(device_id)
+    catalog = data.get("catalog") or _SEED["catalog"]
     if device is None:
-        return {"found": False, "device_id": device_id}
+        return {"found": False, "device_id": device_id, "catalog": catalog}
     device["last_synced"] = datetime.now(UTC).isoformat()
     _save(data)
-    return {"found": True, "device_id": device_id, **device}
+    return {"found": True, "device_id": device_id, "catalog": catalog, **device}
 
 
 @app.tool()

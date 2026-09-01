@@ -22,6 +22,7 @@ See the full agent definitions in the IDE-specific directories.
 
 ## Rules
 All development follows AAMAD core rules. See project-context/ for artifacts.
+MCP tool changes: `.cursor/rules/mcp-tool-catalog.mdc` (`@backend.eng`).
 Run `aamad validate` to check artifact quality gates.
 
 ## Agent Definitions

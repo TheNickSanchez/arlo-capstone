@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from backend.app.config import settings
+from worker.mcp.adf import convert_markdown_to_adf
 
 
 def live_jira_configured() -> bool:
@@ -50,19 +51,21 @@ def adf_to_text(node: Any) -> str:
     return ""
 
 
+def comment_body_to_adf(body: str | dict[str, Any]) -> dict[str, Any]:
+    """Wrap outbound Jira comment text in ADF before REST v3 POST.
+
+    Markdown strings go through `convert_markdown_to_adf` so headers, bold,
+    lists, and tables render natively. An already-built ADF doc is passed
+    through unchanged.
+    """
+    if isinstance(body, dict) and body.get("type") == "doc":
+        return body
+    return convert_markdown_to_adf(str(body or ""))
+
+
 def text_to_adf(body: str) -> dict[str, Any]:
-    lines = body.replace("\r\n", "\n").split("\n")
-    paragraphs: list[dict[str, Any]] = []
-    for line in lines:
-        if line == "":
-            paragraphs.append({"type": "paragraph", "content": []})
-            continue
-        paragraphs.append(
-            {"type": "paragraph", "content": [{"type": "text", "text": line}]}
-        )
-    if not paragraphs:
-        paragraphs = [{"type": "paragraph", "content": []}]
-    return {"type": "doc", "version": 1, "content": paragraphs}
+    """Backward-compatible alias; all comment posts use Markdown → ADF."""
+    return comment_body_to_adf(body)
 
 
 def get_ticket(ticket_key: str) -> dict[str, Any]:
@@ -109,7 +112,7 @@ def post_comment(ticket_key: str, body: str) -> dict[str, Any]:
     with _client() as client:
         response = client.post(
             f"/rest/api/3/issue/{ticket_key}/comment",
-            json={"body": text_to_adf(body)},
+            json={"body": comment_body_to_adf(body)},
         )
         response.raise_for_status()
         payload = response.json()

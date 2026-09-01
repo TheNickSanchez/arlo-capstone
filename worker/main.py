@@ -22,6 +22,7 @@ from worker.activities.generate_proposal import generate_proposal
 from worker.activities.inspect_and_comment import inspect_and_comment
 from worker.activities.investigate import investigate
 from worker.activities.lifecycle import mark_failed
+from worker.activities.post_proposal_comment import post_proposal_comment
 from worker.activities.test_comment import post_smoke_test_comment
 from worker.activities.validate_and_close import validate_and_close
 from worker.mcp.jira_cloud import live_jira_configured
@@ -34,6 +35,7 @@ ACTIVITIES = (
     investigate,
     inspect_and_comment,
     generate_proposal,
+    post_proposal_comment,
     execute_approved,
     validate_and_close,
     post_smoke_test_comment,
@@ -52,8 +54,13 @@ async def _run() -> None:
         os.environ["ATLASSIAN_EMAIL"] = settings.live_jira_email()
         os.environ["ATLASSIAN_API_TOKEN"] = settings.live_jira_api_token()
         logger.info("live Jira Cloud enabled site=%s", settings.live_jira_site())
-    elif settings.arlo_jira_analysis_only:
-        logger.warning("ARLO_JIRA_ANALYSIS_ONLY is set but live Jira credentials are missing")
+    elif settings.arlo_jira_analysis_only or settings.arlo_jira_beta_prod:
+        logger.warning(
+            "Jira lifecycle mode is set but live Jira credentials are missing "
+            "(ARLO_JIRA_ANALYSIS_ONLY=%s ARLO_JIRA_BETA_PROD=%s)",
+            settings.arlo_jira_analysis_only,
+            settings.arlo_jira_beta_prod,
+        )
 
     client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
     worker = Worker(

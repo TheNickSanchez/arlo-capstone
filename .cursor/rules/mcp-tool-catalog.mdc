@@ -1,0 +1,30 @@
+---
+description: Ordered map for adding or tweaking ARLO MCP tools (Jira, SNOW, Jamf, Intune, KB).
+alwaysApply: true
+---
+
+# MCP tool catalog (ARLO)
+
+Do not invent vendor tools. Deny by default (PRD §3.4). Owner: `@backend.eng`.
+
+## Shape-only tweak (same action)
+
+Comment text, analysis JSON, prompt, ADF formatting: edit the Activity + schema only.
+
+- Jira analysis comment: `backend/app/schemas/analysis.py` then `worker/activities/inspect_and_comment.py`
+- Do **not** add a catalog row or MCP tool for a payload-shape change
+
+## New or changed authorized action (this order)
+
+1. **PRD §3.4** — action must already be listed. If not: halt; `@product-mgr` amends the PRD first. `@system.arch` only if SAD tool/HITL tables change.
+2. **`backend/app/domain/actions.py`** — one `ActionSpec` (`system`, `action_type`, `tool_name`, read/write, phases). This is the code allowlist. `allowed_tools` and PEP resolve from here; do not special-case `worker/pep.py` unless gating *logic* is wrong.
+3. **MCP server** — implement the same `tool_name` on the vendor server (`worker/mcp/servers/*_stub_server.py`). Live Jira REST lives in `worker/mcp/jira_cloud.py` and is selected when Atlassian env names are set.
+4. **Call site** — deterministic pre-calls in Activities (`investigate`, `inspect_and_comment`, `execute_approved`, …) or Claude `allowed_tools` via `read_tool_names` / frozen writes. Analysis-only path must not grow extra MCP systems.
+5. **Tests** — `backend/tests/test_actions.py` plus a stub/live unit test if the tool has a helper (e.g. `worker/tests/test_jira_adf.py`).
+6. **`project-context/2.build/backend.md`** — record the change under Claude Agent SDK + MCP.
+
+## Do not
+
+- Add filesystem/shell tools (`ClaudeAgentOptions.tools` stays `[]`)
+- Enable a write before HITL except the documented smoke / analysis-comment exceptions
+- Edit only the stub or only `actions.py` — they must match

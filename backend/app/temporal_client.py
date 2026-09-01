@@ -25,7 +25,11 @@ from temporalio.service import RPCError
 from backend.app.config import settings
 from backend.app.domain.errors import UpstreamUnavailableError
 from backend.app.domain.ids import workflow_id_for
-from backend.app.domain.workflow_contracts import ApprovalDecision, RemediationWorkflowInput
+from backend.app.domain.workflow_contracts import (
+    ApprovalDecision,
+    RemediationWorkflowInput,
+    resolve_lifecycle_flags,
+)
 
 logger = logging.getLogger("arlo.temporal_client")
 
@@ -74,6 +78,11 @@ async def start_remediation_workflow(
     run_method, _ = _workflow_run_ref()
     client = await get_temporal_client()
     workflow_id = workflow_id_for(arlo_id)
+    smoke, analysis_only, beta_prod = resolve_lifecycle_flags(
+        smoke_enabled=settings.arlo_smoke_test_enabled,
+        analysis_only=settings.arlo_jira_analysis_only,
+        beta_prod=settings.arlo_jira_beta_prod,
+    )
     try:
         await client.start_workflow(
             run_method,
@@ -81,10 +90,9 @@ async def start_remediation_workflow(
                 arlo_id=arlo_id,
                 ticket_system=ticket_system,
                 ticket_key=ticket_key,
-                smoke_test_enabled=(
-                    settings.arlo_smoke_test_enabled and not settings.arlo_jira_analysis_only
-                ),
-                jira_analysis_only=settings.arlo_jira_analysis_only,
+                smoke_test_enabled=smoke,
+                jira_analysis_only=analysis_only,
+                jira_beta_prod=beta_prod,
                 investigation_timeout_seconds=settings.investigation_timeout_seconds,
                 execution_timeout_seconds=settings.execution_timeout_seconds,
             ),

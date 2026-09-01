@@ -69,6 +69,8 @@ class ProposalPayload(BaseModel):
     solution_summary: str = ""
     """Reusable fix description persisted to `learned_patterns.solution_payload`
     on Validation success (SAD §2 step 8). Empty when `pattern_type` is null."""
+    comment_body: str = ""
+    """Optional executive Markdown posted to Jira in beta-prod / proposal comment."""
     proposal_hash: str | None = None
     """Populated after `canonical_json_hash`; excluded from the hash input itself."""
 

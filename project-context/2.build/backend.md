@@ -34,9 +34,11 @@ backend/migrations/           Alembic; 0001_initial_schema
 worker/
   main.py                      Temporal worker entrypoint (task_queue=arlo-activities)
   workflows/remediation.py     ArloRemediationWorkflow + approval_decision Signal
-  activities/                  investigate, inspect_and_comment, generate_proposal, execute_approved,
-                               validate_and_close, test_comment, mark_failed
-  mcp/                         ClaudeSDKClient, registry (stdio/SSE), raw_client, stubs, kb_search
+  activities/                  investigate, inspect_and_comment, generate_proposal,
+                               post_proposal_comment, execute_approved, validate_and_close,
+                               test_comment, mark_failed
+  mcp/                         ClaudeSDKClient, registry (stdio/SSE), raw_client, stubs, kb_search,
+                               adf.py + vendored adf_converter.py (Markdown → Jira ADF)
   pep.py                       PreToolUse / PostToolUse
 scripts/
   seed_admin.py                local users row
@@ -86,15 +88,20 @@ API: `client.start_workflow(ArloRemediationWorkflow.run, RemediationWorkflowInpu
 Workflow (`worker/workflows/remediation.py`):
 
 1. If `jira_analysis_only`: Activity `inspect_and_comment` then complete (`Done`). No other MCP, no HITL wait, no execution.
-2. Else optional `post_smoke_test_comment` (when `smoke_test_enabled` is set at start time)
-3. `investigate` → `generate_proposal`
-4. `await workflow.wait_condition(lambda: self._decision is not None)` — worker released; no Claude/MCP held
-5. Signal `approval_decision`; Execution only if `action == approve` and hashes match
-6. `execute_approved` → `validate_and_close`
+2. Else if `jira_beta_prod`: `investigate` → `generate_proposal` → `post_proposal_comment` → `wait_condition` (no endpoint writes until Signal)
+3. Else optional `post_smoke_test_comment` (when `smoke_test_enabled` is set at start time)
+4. `investigate` → `generate_proposal`
+5. `await workflow.wait_condition(lambda: self._decision is not None)` — worker released; no Claude/MCP held
+6. Signal `approval_decision`; Execution only if `action == approve` and hashes match
+7. `execute_approved` → `validate_and_close`
 
-No auto-approve timer. Workflow code does not call LLM, MCP, or DB drivers.
+No auto-approve timer. Workflow code does not call LLM, MCP, or DB drivers. Lifecycle flags are resolved at `start_workflow` time (`resolve_lifecycle_flags`): `ARLO_JIRA_BETA_PROD` wins over `ARLO_JIRA_ANALYSIS_ONLY`; either mode disables the smoke-test comment.
 
-**Jira-only analysis slice** (`ARLO_JIRA_ANALYSIS_ONLY=true`): MCP tools used are only `jira_get_ticket` and `jira_post_comment`. Claude analyzes the fetched ticket JSON with `allowed_tools=[]`. Comment prefix `[Arlo] Analysis for {arlo_id}`. Instance `Investigating` → `Done`. Verify with `python scripts/test_pipeline.py --analysis --ticket-id CPE-4297`. Live Jira Cloud REST v3 when `ATLASSIAN_SITE_NAME` / `ATLASSIAN_EMAIL` / `ATLASSIAN_API_TOKEN` are set (stdio stub otherwise). Smoke-test comment is disabled on this path.
+**Jira comment ADF:** every live `jira_post_comment` body is wrapped with `convert_markdown_to_adf` (`worker/mcp/adf.py`). The import prefers `/Users/nick.sanchez/mcp-servers/atlassian_mcp/shared/adf_converter.py` when that file exists; otherwise the vendored copy in `worker/mcp/adf_converter.py` is used. This is a payload-shape change (MCP catalog: Activity + `jira_cloud.py`), not a new tool.
+
+**Jira-only analysis slice** (`ARLO_JIRA_ANALYSIS_ONLY=true`): MCP tools used are only `jira_get_ticket` and `jira_post_comment`. Claude analyzes the fetched ticket JSON with `allowed_tools=[]`. Comment title is `[Arlo] Investigation Summary` with **Business Impact & Risk**, **Recommended Action Plan**, and **Open Questions**. Do not emit `ARLO Analysis for ARLO-<n>`. Instance `Investigating` → `Done`. Verify with `python scripts/test_pipeline.py --analysis --ticket-id CPE-4297`. Live Jira Cloud REST v3 when `ATLASSIAN_SITE_NAME` / `ATLASSIAN_EMAIL` / `ATLASSIAN_API_TOKEN` are set (stdio stub otherwise). Smoke-test comment is disabled on this path.
+
+**Jira beta-prod slice** (`ARLO_JIRA_BETA_PROD=true`): Investigation identifies Apple (`macOS` → Jamf) vs Windows (`Windows` → Intune) from ticket text, then uses existing read tools (`jamf_read_compliance` / `jamf_fetch_logs` or `intune_read_compliance` / `intune_sync_device`) including stub `catalog` (policies, groups, scripts, Extension Attributes). Claude records asset gaps. `generate_proposal` persists the plan and moves the instance to `Awaiting Approval`. `post_proposal_comment` publishes the executive Markdown via ADF. The Workflow then `wait_condition`s on Signal `approval_decision`. No Jamf/Intune/ServiceNow writes are scheduled before that wait. Verify with `python scripts/test_pipeline.py --beta-prod --ticket-id CPE-4297`.
 
 ## Claude Agent SDK + MCP
 
@@ -106,6 +113,18 @@ No auto-approve timer. Workflow code does not call LLM, MCP, or DB drivers.
 - PEP: deny vendor writes unless phase is Executing (Activity `writes_enabled`) **and** tool ∈ frozen list. Policy deny is audited, never treated as success.
 
 Turn caps from env: investigation 24 / 900s; execution 16 / 900s. Max concurrent runs default 5.
+
+### Changing MCP tools (operator iteration)
+
+Playbook for `@backend.eng`: `.cursor/rules/mcp-tool-catalog.mdc`. Short form:
+
+| Change | Where |
+|---|---|
+| Same Jira/SNOW/Jamf/Intune/KB **action**, different payload or comment text | Activity + Pydantic schema only (Jira analysis: `schemas/analysis.py`, `inspect_and_comment.py`) |
+| New or renamed **authorized** action | PRD §3.4 first if missing → `backend/app/domain/actions.py` → matching tool on `worker/mcp/servers/*` (live Jira: also `jira_cloud.py`) → Activity call site if it is a pre-call → `backend/tests/test_actions.py` → this file |
+| PEP / `allowed_tools` | Derived from the catalog. Do not fork lists in `pep.py` or `agents.py` unless the specialist prompt must mention the new tool by name |
+
+Writes stay Execution-phase and HITL-gated except the documented smoke-test and Jira-analysis comment exceptions.
 
 ## Smoke-test execution path (operator verification)
 
@@ -146,6 +165,8 @@ AppSec/git, webhook auto-spawn (P1), CrewAI, Temporal Cloud, live production dep
 4. `.cursor/rules/adapter-claude-agent-sdk.mdc` (ClaudeSDKClient, hooks, least-privilege tools, session-per-Activity).
 5. `.cursor/agents/backend-eng.md` (commands; SAD overrides “no database”).
 6. Operator instruction (2026-09-01): production directory layout, Alembic on startup, smoke-test Jira comment, `scripts/test_pipeline.py`.
+7. Operator instruction (2026-09-01): Markdown → ADF via `convert_markdown_to_adf`, executive analysis comment template, `ARLO_JIRA_BETA_PROD` discovery + proposal + HITL pause.
+7. Operator instruction (2026-09-01): Markdown → ADF via `convert_markdown_to_adf`, executive analysis comment template, `ARLO_JIRA_BETA_PROD` discovery + proposal + HITL pause.
 
 ## Assumptions
 
@@ -156,6 +177,7 @@ AppSec/git, webhook auto-spawn (P1), CrewAI, Temporal Cloud, live production dep
 - Capstone MCP stubs over stdio are acceptable when `*_MCP_URL` is empty; they still persist fixture writes so the smoke test is observable.
 - The smoke-test Jira comment is an **operator-authorized HITL exception** for pipeline verification only. It is not a remediation write, is not in investigator `allowed_tools`, and is gated by `ARLO_SMOKE_TEST_ENABLED` / `smoke_test_enabled` on the Workflow input.
 - The Jira-only analysis slice (`ARLO_JIRA_ANALYSIS_ONLY`) is a second **operator-authorized** exception: inspect + analysis comment, then stop. It does not enable Jamf/Intune/ServiceNow, HITL execution, or ticket close. `Investigating` → `Done` is legal only for this completion path; `Investigating` → `Executing` remains forbidden.
+- `ARLO_JIRA_BETA_PROD` is a third **operator-authorized** exception for the discovery/proposal Jira comment (same `jira_post_comment` action, still not in investigator `allowed_tools`). It enables Jamf/Intune **reads** and sleeps at `Awaiting Approval`. It does not authorize endpoint writes before the approval Signal. No new PRD §3.4 tools were added; catalog fields are a richer return shape on existing compliance reads.
 - LiteLLM is optional; empty `ANTHROPIC_BASE_URL` means the SDK uses its default Anthropic endpoint.
 - `kb_articles` ingest is setup/admin, not an Investigation tool. Embeddings require `EMBEDDING_*`; KB miss is a declared gap, not fail-open.
 - Local Compose Postgres password `arlo` is a documented capstone default, not a production secret.
@@ -174,6 +196,8 @@ Carried from PRD/SAD; not resolved here:
 7. Whether dashboard MVP must list matched pattern / KB citations (payload is already on instance detail).
 8. Webhook-originated approval vs dashboard-only (ingress exists; P0 actor remains dashboard).
 9. When to restore the full HITL remediation path after the Jira-analysis-only slice.
+10. Whether `ARLO_JIRA_BETA_PROD` should remain a flag after the capstone demo or become the default spawn path (analysis-only stays the inspect-and-stop slice).
+11. Live Jamf/Intune MCP payloads may omit stub `catalog` fields; gap records are then required rather than inventing EA/policy inventory.
 
 ## Audit
 
@@ -189,4 +213,34 @@ Carried from PRD/SAD; not resolved here:
 - **Tool usage:** Read/Write for workflow, Jira Cloud REST helper, inspect Activity, tests, this file.
 - **Write method:** in-place under `backend/`, `worker/`, `scripts/`.
 - **Prohibited actions honored:** no other MCP systems; no ticket close/transition; no HITL execution; no secret values in artifacts.
+- **Self-check (required headings):** Sources; Assumptions; Open Questions; Audit.
+
+## Audit
+
+- **Timestamp:** 2026-09-01T22:40:00Z (operator local 2026-09-01 ~15:40 PDT)
+- **Persona id:** `backend-eng`
+- **Action:** `document-backend` (MCP tool-change playbook)
+- **Output path:** `project-context/2.build/backend.md`; `.cursor/rules/mcp-tool-catalog.mdc`; `.cursor/agents/backend-eng.md`
+- **Resolved AAMAD_TARGET_RUNTIME:** `claude-agent-sdk`
+- **Config loaded:** `aamad.config.yml`
+- **Inputs read:** operator request for a single ordered map (PRD → actions.py → MCP server → PEP/allowed_tools) so Jira/MCP tweaks are repeatable.
+- **Prompt Trace:** omitted. Documentation-only; no runtime execution.
+- **Tool usage:** Read (persona, actions.py, pep.py, backend.md); Write (rule, persona, this file, epics-index, AGENTS.md).
+- **Prohibited actions honored:** no new MCP tools added; no secrets.
+- **Self-check (required headings):** Sources; Assumptions; Open Questions; Audit.
+
+## Audit
+
+- **Timestamp:** 2026-09-01T23:20:00Z (operator local 2026-09-01 ~16:20 PDT)
+- **Persona id:** `backend-eng`
+- **Action:** `develop-be` (ADF comments, executive analysis prompt, `ARLO_JIRA_BETA_PROD`)
+- **Output path:** `project-context/2.build/backend.md`; `backend/`; `worker/`
+- **Resolved AAMAD_TARGET_RUNTIME:** `claude-agent-sdk`
+- **Config loaded:** `aamad.config.yml`
+- **Inputs read:** operator prompt for ADF converter integration, executive analysis persona, and beta-prod discovery/proposal lifecycle; PRD §3.4; SAD HITL; `mcp-tool-catalog.mdc`; existing inspect/investigate/proposal Activities.
+- **Prompt Trace:** omitted. System prompts are the executive Markdown template already recorded in this artifact; no secrets. Live Atlassian token values remain env-only.
+- **Model / temperature / max_tokens:** Cursor Grok 4.6 interactive session. Runtime Activities use `CLAUDE_MODEL` from env.
+- **Tool usage:** Read/Write for worker Activities, Jira Cloud ADF wrap, lifecycle flags, tests, this file.
+- **Write method:** in-place under `backend/`, `worker/`, `scripts/`.
+- **Prohibited actions honored:** no new MCP tools; no Jamf/Intune writes before HITL; no secret values in artifacts.
 - **Self-check (required headings):** Sources; Assumptions; Open Questions; Audit.

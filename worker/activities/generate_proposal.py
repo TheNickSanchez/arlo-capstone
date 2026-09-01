@@ -37,14 +37,39 @@ non-ticket-specific pattern (a `script_fix`, `version_endpoint`, or `vendor_gotc
 `pattern_type` and a concise `solution_summary`; otherwise leave both empty. Return only the \
 ProposalPayload JSON."""
 
+_BETA_PROD_PROPOSAL_ADDENDUM = """
+
+This run is ARLO_JIRA_BETA_PROD. Also fill `comment_body` with executive Markdown for \
+directors — clean, direct, no "ARLO Analysis for ARLO-…" branding — using exactly:
+
+[Arlo] Investigation Summary
+
+**Business Impact & Risk**
+Brief 1-2 sentence description of the vulnerability, affected asset count, and potential business risk.
+
+**Recommended Action Plan**
+* High-level step 1
+* High-level step 2
+
+**Open Questions**
+* Critical questions regarding maintenance windows or target versions.
+
+Include discovery results (platform, existing MDM assets, and gaps such as missing \
+Extension Attributes or policies) in those sections. Do not claim any endpoint write \
+has been executed."""
+
 
 @activity.defn(name="generate_proposal")
 async def generate_proposal(input: GenerateProposalInput) -> dict:
     activity.logger.info("generate_proposal start arlo_id=%s", input.arlo_id)
     evidence = EvidencePack.model_validate(input.evidence_pack)
 
+    system_prompt = _PROPOSAL_SYSTEM_PROMPT
+    if input.jira_beta_prod:
+        system_prompt = _PROPOSAL_SYSTEM_PROMPT + _BETA_PROD_PROPOSAL_ADDENDUM
+
     options = build_claude_options(
-        system_prompt=_PROPOSAL_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         allowed_tools=read_tool_names(Phase.PROPOSAL),
         agents=coordinator_agents(),
         mcp_servers={"kb": build_kb_search_server()},
@@ -62,6 +87,11 @@ async def generate_proposal(input: GenerateProposalInput) -> dict:
         f"{json.dumps(evidence.model_dump(mode='json'), indent=2)}\n\n"
         "Produce the ProposalPayload JSON now."
     )
+    if input.jira_beta_prod:
+        prompt += (
+            " Include an executive `comment_body` covering platform discovery, "
+            "asset gaps, and the proposed remediation. Do not execute writes."
+        )
 
     try:
         result = await run_claude_query(prompt=prompt, options=options)

@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     arlo_smoke_test_enabled: bool = True
     arlo_jira_analysis_only: bool = False
     """When true, spawn runs inspect+comment on Jira and stops (no MDM/SNOW/HITL)."""
+    arlo_jira_beta_prod: bool = False
+    """When true, spawn runs discovery + proposal comment, then sleeps at HITL."""
     atlassian_site_name: str = ""
     atlassian_email: str = ""
     atlassian_api_token: str = ""

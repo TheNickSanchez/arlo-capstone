@@ -19,6 +19,20 @@ from typing import Literal
 ApprovalAction = Literal["approve", "reject", "cancel"]
 
 
+def resolve_lifecycle_flags(
+    *, smoke_enabled: bool, analysis_only: bool, beta_prod: bool
+) -> tuple[bool, bool, bool]:
+    """Return `(smoke_test_enabled, jira_analysis_only, jira_beta_prod)`.
+
+    `ARLO_JIRA_BETA_PROD` wins over analysis-only. Either lifecycle mode
+    disables the smoke-test comment.
+    """
+    jira_beta_prod = beta_prod
+    jira_analysis_only = analysis_only and not jira_beta_prod
+    smoke_test_enabled = smoke_enabled and not jira_analysis_only and not jira_beta_prod
+    return smoke_test_enabled, jira_analysis_only, jira_beta_prod
+
+
 @dataclass
 class RemediationWorkflowInput:
     arlo_id: str
@@ -30,6 +44,10 @@ class RemediationWorkflowInput:
     jira_analysis_only: bool = False
     """Operator-authorized Jira-only slice: inspect ticket, post analysis
     comment, stop. No other MCP systems, no HITL wait, no execution."""
+    jira_beta_prod: bool = False
+    """Operator-authorized discovery + proposal lifecycle: identify platform,
+    read Jamf/Intune, post an ADF proposal comment, then wait at
+    Awaiting Approval. No endpoint writes until a human Signal."""
     investigation_timeout_seconds: int = 900
     execution_timeout_seconds: int = 900
     """`start_to_close_timeout` budgets for the matching Activities, threaded
@@ -59,6 +77,15 @@ class GenerateProposalInput:
     ticket_system: str
     ticket_key: str
     evidence_pack: dict = field(default_factory=dict)
+    jira_beta_prod: bool = False
+
+
+@dataclass
+class PostProposalCommentInput:
+    arlo_id: str
+    ticket_system: str
+    ticket_key: str
+    proposal: dict = field(default_factory=dict)
 
 
 @dataclass

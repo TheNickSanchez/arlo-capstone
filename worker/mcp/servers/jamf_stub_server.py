@@ -28,6 +28,12 @@ _SEED: dict[str, Any] = {
         },
     },
     "applied_profiles": [],
+    "catalog": {
+        "policies": ["FileVault-Enforce", "Gatekeeper-Required"],
+        "smart_groups": ["FileVault-NonCompliant", "macOS-Managed"],
+        "scripts": ["install-node.sh"],
+        "extension_attributes": ["HomebrewVersion"],
+    },
 }
 
 
@@ -48,9 +54,10 @@ def jamf_read_compliance(asset_tag: str) -> dict[str, Any]:
     """Read device compliance status and failed policy/smart-group flags (read)."""
     data = _store()
     device = data["devices"].get(asset_tag)
+    catalog = data.get("catalog") or _SEED["catalog"]
     if device is None:
-        return {"found": False, "asset_tag": asset_tag}
-    return {"found": True, "asset_tag": asset_tag, **device}
+        return {"found": False, "asset_tag": asset_tag, "catalog": catalog}
+    return {"found": True, "asset_tag": asset_tag, "catalog": catalog, **device}
 
 
 @app.tool()

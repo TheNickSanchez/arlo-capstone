@@ -4,6 +4,8 @@ Deterministic control flow only. No LLM, MCP, or DB drivers — Activities
 are referenced by registered string name only. Lifecycle:
 
     if `jira_analysis_only`: inspect_and_comment → Done (no HITL, no other MCP)
+    elif `jira_beta_prod`: investigate → generate_proposal → post_proposal_comment
+    → wait_condition(Signal `approval_decision`) — no endpoint writes until Signal
     else: smoke-test (optional) → investigate → generate_proposal
     → wait_condition(Signal `approval_decision`)
     → execute_approved (approve + hash match only) → validate_and_close
@@ -27,6 +29,7 @@ with workflow.unsafe.imports_passed_through():
         ExecuteApprovedInput,
         GenerateProposalInput,
         MarkFailedInput,
+        PostProposalCommentInput,
         RemediationWorkflowInput,
         ValidateAndCloseInput,
     )
@@ -123,6 +126,7 @@ class ArloRemediationWorkflow:
                 ticket_system=input.ticket_system,
                 ticket_key=input.ticket_key,
                 evidence_pack=evidence_pack,
+                jira_beta_prod=input.jira_beta_prod,
             ),
             investigation_timeout,
         )
@@ -130,6 +134,24 @@ class ArloRemediationWorkflow:
             return "Failed"
         proposal = proposal_stage.value
 
+        if input.jira_beta_prod:
+            comment_stage = await self._run_stage(
+                input.arlo_id,
+                "Awaiting Approval",
+                "post_proposal_comment",
+                PostProposalCommentInput(
+                    arlo_id=input.arlo_id,
+                    ticket_system=input.ticket_system,
+                    ticket_key=input.ticket_key,
+                    proposal=proposal if isinstance(proposal, dict) else {},
+                ),
+                investigation_timeout,
+            )
+            if not comment_stage.ok:
+                return "Failed"
+
+        # HITL sleep. Beta-prod and full path both stop here until Signal.
+        # No Jamf/Intune/ServiceNow writes are scheduled before this wait.
         await workflow.wait_condition(lambda: self._decision is not None)
         decision = self._decision
         assert decision is not None

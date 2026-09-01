@@ -19,6 +19,7 @@ alwaysApply: true
 ## Execution Notes
 - Each persona works independently referencing project-context/1.define/prd.md and sad.md.
 - Build-phase artifacts live under project-context/2.build/; Deliver artifact is project-context/3.deliver/deploy.md.
+- MCP tool add/tweak: `@backend.eng` follows `.cursor/rules/mcp-tool-catalog.mdc`. New verbs need a PRD §3.4 amendment (`@product-mgr`) first.
 - Mark “future work” visibly in UI and docs as needed.
 - Update this index as epics progress or new ones are added.
 

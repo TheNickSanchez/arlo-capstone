@@ -12,5 +12,10 @@ class TicketAnalysis(BaseModel):
     unknowns: list[str] = Field(default_factory=list)
     comment_body: str = Field(
         default="",
-        description="Plain-text Jira comment. No endpoint or ticket mutations besides this comment.",
+        description=(
+            "Executive Markdown for the Jira comment. Must start with "
+            "'[Arlo] Investigation Summary' and use Business Impact & Risk, "
+            "Recommended Action Plan, and Open Questions. Converted to ADF "
+            "before jira_post_comment. No endpoint or ticket mutations besides this comment."
+        ),
     )

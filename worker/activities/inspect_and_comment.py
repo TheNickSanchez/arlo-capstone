@@ -19,6 +19,7 @@ from backend.app.domain.workflow_contracts import RemediationWorkflowInput
 from backend.app.models.instance import Instance
 from backend.app.schemas.analysis import TicketAnalysis
 from backend.app.services.audit import append_audit_event
+from worker.activities.comment_format import executive_comment_from_analysis
 from worker.activities.common import (
     non_retryable,
     record_diagnostic,
@@ -29,11 +30,28 @@ from worker.mcp.claude_client import build_claude_options
 from worker.mcp.jira_cloud import live_jira_configured
 from worker.mcp.raw_client import McpToolCallError, call_tool
 
-_SYSTEM_PROMPT = """You are ARLO performing a Jira-only inspection. You are given ticket \
-JSON already fetched from Jira. Do not invent facts that are not in the ticket. Identify \
-what needs to get done and what is still unknown. Write `comment_body` as a concise ticket \
-comment a human can act on: short summary, numbered next steps, and open questions. Do not \
-recommend wiping devices, changing identity, or any action outside the ticket's stated work. \
+_SYSTEM_PROMPT = """You are ARLO writing for directors and other non-technical \
+leadership. You are given ticket JSON already fetched from Jira. Do not invent \
+facts that are not in the ticket. Do not recommend wiping devices, changing \
+identity, or any action outside the ticket's stated work.
+
+Write `comment_body` as concise executive Markdown that a human can act on. \
+Keep it clean and direct. Do not write self-referential branding such as \
+"ARLO Analysis for ARLO-677" or "Analysis for {ticket}". Use exactly this shape:
+
+[Arlo] Investigation Summary
+
+**Business Impact & Risk**
+Brief 1-2 sentence description of the vulnerability, affected asset count, and potential business risk.
+
+**Recommended Action Plan**
+* High-level step 1
+* High-level step 2
+
+**Open Questions**
+* Critical questions regarding maintenance windows or target versions.
+
+Also fill `summary`, `what_needs_to_get_done`, and `unknowns` with the same facts. \
 Return only TicketAnalysis JSON."""
 
 
@@ -96,8 +114,8 @@ async def inspect_and_comment(input: RemediationWorkflowInput) -> dict:
         output_format={"type": "json_schema", "schema": TicketAnalysis.model_json_schema()},
     )
     prompt = (
-        f"ARLO instance {input.arlo_id} is inspecting this Jira ticket. "
-        "Evaluate what needs to get done. Do not call tools.\n\n"
+        "Inspect this Jira ticket and produce an executive-ready TicketAnalysis. "
+        "Do not call tools. Do not mention the ARLO instance id in comment_body.\n\n"
         f"{json.dumps(ticket, indent=2, default=str)}"
     )
 
@@ -108,12 +126,8 @@ async def inspect_and_comment(input: RemediationWorkflowInput) -> dict:
         await _diagnose(input.arlo_id, f"analysis failed: {exc}")
         raise
 
-    header = (
-        f"[Arlo] Analysis for {input.arlo_id} "
-        "(inspect only — no endpoint or ticket mutation beyond this comment)"
-    )
-    comment_body = analysis.comment_body.strip() or analysis.summary
-    posted = f"{header}\n\n{comment_body}"
+    # Markdown → ADF happens inside live `jira_post_comment` (jira_cloud).
+    posted = executive_comment_from_analysis(analysis)
 
     try:
         call_result = await call_tool(
@@ -126,6 +140,7 @@ async def inspect_and_comment(input: RemediationWorkflowInput) -> dict:
         raise
 
     payload = analysis.model_dump(mode="json")
+    payload["comment_body"] = posted
     async with session_scope() as session:
         instance = await session.get(Instance, input.arlo_id)
         if instance is None:
