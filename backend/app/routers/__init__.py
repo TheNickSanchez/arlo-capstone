@@ -1,1 +1,1 @@
-# API routers (SAD §4). Implement in @backend.eng.
+# Deprecated package. Routers live in `backend.app.api.v1`.

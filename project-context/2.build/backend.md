@@ -1,60 +1,192 @@
-# Backend epic: ARLO (backlog)
+# Backend epic: ARLO
 
 **Document type:** AAMAD backend epic specification  
-**Status:** Backlog — not implemented  
+**Product:** ARLO — Automated Remediation Loop Orchestrator  
+**Phase:** 2 Build  
 **Owner persona:** `@backend.eng` (`backend-eng`)  
+**Status:** Implemented (`*develop-be` + `*define-agents` + `*implement-endpoint` + `*document-backend`)  
 **Depends on:** `project-context/2.build/setup.md` (complete)  
-**Action when executing:** `*develop-be` then `*document-backend`
+**Action:** `develop-be`
 
-Replace this backlog with implementation records. Keep Sources, Assumptions, Open Questions, and Audit.
+Generic persona text that forbids databases and external integrations **does not apply**. PRD/SAD require PostgreSQL, Temporal, Claude Agent SDK, and MCP bindings for MVP. No CrewAI YAML was generated.
 
 ## Scope (SAD-authoritative)
 
-Generic persona text that forbids databases and external integrations **does not apply**. PRD/SAD require PostgreSQL, Temporal, Claude Agent SDK, and MCP bindings for MVP.
+Production FastAPI control plane, PostgreSQL schema (including Central Memory and Vector KB), Temporal `ArloRemediationWorkflow` + Activities, Claude Agent SDK inside Activities, MCP stdio/SSE client layer, and a single wired smoke-test Activity that posts a Jira comment to verify API → Temporal → Worker → MCP → DB.
 
-Do not generate CrewAI YAML. Runtime is `claude-agent-sdk` only.
+HITL sleep is `workflow.wait_condition` on Signal `approval_decision`. Write MCP tools stay out of `allowed_tools` until an approval row exists; `PreToolUse` PEP is the last-line deny.
 
-## Tasks (sequential within this epic)
+## Repository layout (this epic)
 
-1. **API contracts (SAD §4)** — FastAPI `/api/v1`: instances CRUD/list, audit, approve/reject/cancel, webhooks, `/health`, `/ready`. Error envelope `{ "error": { "code", "message", "arlo_id" } }`. Auth except health/ready. Duplicate active ticket → 409. Stale `proposal_hash` → 409, no Signal.
-2. **PostgreSQL + Alembic** — Models from `backend/app/models/schema.sql`. First revision under `backend/migrations/versions/`. Append-only `audit_events`.
-3. **Temporal client on API** — `start_workflow(ArloRemediationWorkflow.run, …, id=workflow_id, task_queue="arlo-activities")`. Signal `approval_decision` only after approvals row is persisted.
-4. **`ArloRemediationWorkflow`** — Deterministic: schedule `investigate` → `generate_proposal` → `wait_condition` on Signal → `execute_approved` (approve + hash match only) → `validate_and_close`. No auto-approve timer. No LLM/MCP/DB in Workflow code.
-5. **Activities + Claude Agent SDK** — New `ClaudeSDKClient` per Activity; close on completion. Pass `worker.sdk_env.claude_sdk_environ()` into `ClaudeAgentOptions(env=...)` so `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` route through LiteLLM. Coordinator + `arlo-investigator` / `arlo-executor` `AgentDefinition`s. Turn caps from env. No built-in filesystem/shell tools.
-6. **MCP** — HTTP/SSE or stdio per env. Read tools in investigate/proposal/validate; write tools only in execute from frozen list. Fail closed if required server missing.
-7. **PEP** — `PreToolUse` deny writes unless phase is Executing and tool ∈ frozen list; `PostToolUse` audit (redact). Policy deny is not success.
-8. **AuthN** — Session cookie or signed token using `ARLO_SESSION_SECRET`. No anonymous Approve. Approver → `approvals.actor_id`.
+```
+backend/app/
+  main.py                      FastAPI app: CORS, error envelope, lifespan migrations, /health /ready
+  api/v1/                      SAD §4 REST: instances, auth, webhooks
+  db/                          asyncpg engine/pool, session, Alembic runner
+  models/                      SQLAlchemy: users, instances, approvals, audit_events,
+                               learned_patterns, kb_articles (pgvector VECTOR(1536))
+  schemas/                     Pydantic request/response + evidence/proposal/validation
+  services/                    spawn, HITL persist-before-Signal, audit append-only
+  security/                    session cookie / Bearer HMAC token, password hash
+  temporal_client.py           start_workflow + signal_approval_decision
+  domain/                      status machine, action catalog, proposal hash, workflow dataclasses
+backend/migrations/           Alembic; 0001_initial_schema
+worker/
+  main.py                      Temporal worker entrypoint (task_queue=arlo-activities)
+  workflows/remediation.py     ArloRemediationWorkflow + approval_decision Signal
+  activities/                  investigate, inspect_and_comment, generate_proposal, execute_approved,
+                               validate_and_close, test_comment, mark_failed
+  mcp/                         ClaudeSDKClient, registry (stdio/SSE), raw_client, stubs, kb_search
+  pep.py                       PreToolUse / PostToolUse
+scripts/
+  seed_admin.py                local users row
+  test_pipeline.py             POST /api/v1/instances → DB + Temporal + Jira comment + audit
+```
 
-## Out of scope
+## API contracts (SAD §4)
 
-AppSec/git, auto-spawn from ticket-created webhooks (P1), CrewAI, Temporal Cloud, live production deploy.
+Base path `/api/v1`. JSON. Auth required except `/health` and `/ready`.
+
+| Method | Path | Behavior |
+|---|---|---|
+| POST | `/instances` | Validate ticket; insert `instances` (`Investigating`); `start_workflow`; 201 `{ arlo_id, status }` |
+| GET | `/instances` | Grid; query `status`, `limit`, `offset` |
+| GET | `/instances/{arlo_id}` | Mapping, status, timestamps, proposal, approval summary |
+| GET | `/instances/{arlo_id}/audit` | Append-only events, chronological |
+| POST | `/instances/{arlo_id}/approve` | Persist `approvals` then Signal; stale `proposal_hash` → 409, no Signal |
+| POST | `/instances/{arlo_id}/reject` | Persist + Signal; terminal `Rejected` |
+| POST | `/instances/{arlo_id}/cancel` | Signal cancel if not terminal |
+| POST | `/auth/login` | Session cookie + Bearer token (no anonymous Approve) |
+| POST | `/webhooks/jira` `/webhooks/servicenow` | HMAC; approval-shaped payload → persist + Signal. Auto-spawn is P1. |
+| GET | `/health` | Liveness |
+| GET | `/ready` | PostgreSQL + Temporal |
+
+**Error envelope:** `{ "error": { "code", "message", "arlo_id" } }` with codes `validation_error`, `conflict`, `not_found`, `unauthenticated`, `policy_deny`, `upstream_unavailable`. Duplicate active ticket mapping → **409**. Spawn without ticket id → **400**, no row.
+
+CORS: `FRONTEND_ORIGIN` / localhost:3000, credentials required (httpOnly `arlo_session` cookie).
+
+## PostgreSQL + Alembic
+
+ORM models match SAD §4 (`users`, `instances`, `approvals`, `audit_events`, `learned_patterns`, `kb_articles`). `pgvector` extension + `VECTOR(1536)` on `kb_articles.embedding`. Partial unique index `instances_active_ticket_uidx` enforces one active mapping per ticket.
+
+Connection: SQLAlchemy async engine, **asyncpg** pool (`pool_size=10`, `max_overflow=20`, `pool_pre_ping`). Alembic uses synchronous `psycopg`.
+
+Migrations run:
+
+1. FastAPI lifespan (`backend.app.db.migrate.run_upgrade_head`)
+2. Compose API entrypoint `docker/entrypoint-api.sh`
+3. `alembic -c backend/alembic.ini upgrade head`
+
+`arlo_id` allocation: sequence `arlo_instance_seq` starting at 675 (`ARLO-<n>`). Workflow id = lowercase display id (`arlo-675`).
+
+## Temporal
+
+API: `client.start_workflow(ArloRemediationWorkflow.run, RemediationWorkflowInput, id=workflow_id, task_queue="arlo-activities")`.
+
+Workflow (`worker/workflows/remediation.py`):
+
+1. If `jira_analysis_only`: Activity `inspect_and_comment` then complete (`Done`). No other MCP, no HITL wait, no execution.
+2. Else optional `post_smoke_test_comment` (when `smoke_test_enabled` is set at start time)
+3. `investigate` → `generate_proposal`
+4. `await workflow.wait_condition(lambda: self._decision is not None)` — worker released; no Claude/MCP held
+5. Signal `approval_decision`; Execution only if `action == approve` and hashes match
+6. `execute_approved` → `validate_and_close`
+
+No auto-approve timer. Workflow code does not call LLM, MCP, or DB drivers.
+
+**Jira-only analysis slice** (`ARLO_JIRA_ANALYSIS_ONLY=true`): MCP tools used are only `jira_get_ticket` and `jira_post_comment`. Claude analyzes the fetched ticket JSON with `allowed_tools=[]`. Comment prefix `[Arlo] Analysis for {arlo_id}`. Instance `Investigating` → `Done`. Verify with `python scripts/test_pipeline.py --analysis --ticket-id CPE-4297`. Live Jira Cloud REST v3 when `ATLASSIAN_SITE_NAME` / `ATLASSIAN_EMAIL` / `ATLASSIAN_API_TOKEN` are set (stdio stub otherwise). Smoke-test comment is disabled on this path.
+
+## Claude Agent SDK + MCP
+
+- New `ClaudeSDKClient` per Activity (`worker/mcp/claude_client.py`); closed on completion. `tools=[]` (no filesystem/shell). `strict_mcp_config=True`. `permission_mode=dontAsk` (PEP is the gate).
+- `ClaudeAgentOptions(env=claude_sdk_environ())` so `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` reach the SDK subprocess (LiteLLM-compatible).
+- Specialists: `AgentDefinition` `arlo-investigator` / `arlo-executor` (`worker/mcp/agents.py`).
+- MCP: HTTP/SSE when `*_MCP_URL` is set; else stdio command; else in-repo fixture stub (`worker/mcp/servers/*`).
+- Internal `kb_search`: in-process SDK MCP over `kb_articles`.
+- PEP: deny vendor writes unless phase is Executing (Activity `writes_enabled`) **and** tool ∈ frozen list. Policy deny is audited, never treated as success.
+
+Turn caps from env: investigation 24 / 900s; execution 16 / 900s. Max concurrent runs default 5.
+
+## Smoke-test execution path (operator verification)
+
+**Not** a production remediation write. `ARLO_SMOKE_TEST_ENABLED` (default true) is copied onto `RemediationWorkflowInput` at `start_workflow` time so the Workflow stays deterministic.
+
+Activity `worker/activities/test_comment.py` calls Jira MCP `jira_post_comment` with:
+
+`[Arlo] Backend pipeline connected. Instance {arlo_id} initialized.`
+
+and appends `audit_events.kind=smoke_test`. It uses `worker.mcp.raw_client` (no Claude loop). Disable with `ARLO_SMOKE_TEST_ENABLED=false`.
+
+Verification script: `python scripts/test_pipeline.py` (unique `JIRA-PIPE-<epoch>` by default so reruns do not 409).
+
+## AuthN
+
+Signed HMAC session token (`ARLO_SESSION_SECRET`). Bearer header or `arlo_session` cookie. Approver → `approvals.actor_id`. Seed via `python scripts/seed_admin.py`. Any authenticated user may Approve until PRD Open Question 2 is resolved.
+
+## Out of scope (this epic)
+
+AppSec/git, webhook auto-spawn (P1), CrewAI, Temporal Cloud, live production deploy, frontend wiring (`@integration.eng`).
 
 ## Handoff
 
-`@frontend.eng` may work in parallel. `@integration.eng` needs stable JSON contracts and auth scheme documented in this file after implementation.
+`@frontend.eng` may work in parallel. `@integration.eng` needs:
+
+- Base URL `NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:8000`)
+- `POST /api/v1/auth/login` → cookie + `token`; send `Authorization: Bearer` or cookie
+- Spawn body `{ ticket_system: "jira"|"servicenow", ticket_id }`
+- Approve/Reject body `{ proposal_hash }` (409 on stale hash)
+- Error envelope `{ error: { code, message, arlo_id } }`
+- Poll GET list/detail/audit every 2–5s while non-terminal
 
 ## Sources
 
-1. `project-context/1.define/sad.md` §2, §4, AD-1–AD-12.
-2. `project-context/1.define/prd.md` §3–§5, FR-P0-01–10.
-3. `project-context/2.build/setup.md`.
-4. `.cursor/rules/adapter-claude-agent-sdk.mdc`.
-5. `.cursor/agents/backend-eng.md` (commands only; SAD overrides “no database”).
+1. `project-context/1.define/sad.md` §1–§4, §6, AD-1–AD-15 (Temporal, Claude in Activities, MCP, FastAPI, PostgreSQL, HITL Signal, Central Memory, Vector KB).
+2. `project-context/1.define/prd.md` §3–§5, FR-P0-01–10, UI-P0 status vocabulary, MCP authorized actions.
+3. `project-context/2.build/setup.md` (layout, env names, Compose, LiteLLM routing).
+4. `.cursor/rules/adapter-claude-agent-sdk.mdc` (ClaudeSDKClient, hooks, least-privilege tools, session-per-Activity).
+5. `.cursor/agents/backend-eng.md` (commands; SAD overrides “no database”).
+6. Operator instruction (2026-09-01): production directory layout, Alembic on startup, smoke-test Jira comment, `scripts/test_pipeline.py`.
 
 ## Assumptions
 
-- Scaffold routers and `schema.sql` are contracts, not a complete API.
-- LiteLLM is optional; empty `ANTHROPIC_BASE_URL` means direct Anthropic.
-- MCP server implementations are not this epic; bind authorized actions only.
+- SAD overrides the generic backend-eng “no database / no integrations” prohibition for this product.
+- Duplicate active ticket spawn is 409 (SAD default for PRD Open Question 3).
+- Any authenticated ARLO user may Approve (PRD Open Question 2 unset).
+- Numeric `ARLO-<n>` ids; sequence starts at 675.
+- Capstone MCP stubs over stdio are acceptable when `*_MCP_URL` is empty; they still persist fixture writes so the smoke test is observable.
+- The smoke-test Jira comment is an **operator-authorized HITL exception** for pipeline verification only. It is not a remediation write, is not in investigator `allowed_tools`, and is gated by `ARLO_SMOKE_TEST_ENABLED` / `smoke_test_enabled` on the Workflow input.
+- The Jira-only analysis slice (`ARLO_JIRA_ANALYSIS_ONLY`) is a second **operator-authorized** exception: inspect + analysis comment, then stop. It does not enable Jamf/Intune/ServiceNow, HITL execution, or ticket close. `Investigating` → `Done` is legal only for this completion path; `Investigating` → `Executing` remains forbidden.
+- LiteLLM is optional; empty `ANTHROPIC_BASE_URL` means the SDK uses its default Anthropic endpoint.
+- `kb_articles` ingest is setup/admin, not an Investigation tool. Embeddings require `EMBEDDING_*`; KB miss is a declared gap, not fail-open.
+- Local Compose Postgres password `arlo` is a documented capstone default, not a production secret.
+- `ARLO_SESSION_SECRET` should be set for any persistent environment; if unset, tokens are ephemeral per API process.
 
 ## Open Questions
 
-See PRD/SAD Open Questions 1–9, 13 (webhook-originated approval). Confirm idempotency key = `arlo_id` + `proposal_hash` + action id.
+Carried from PRD/SAD; not resolved here:
+
+1. Live MCP vs stdio stubs for demo (default: stubs when URLs empty; Jira Cloud REST when Atlassian env names are set).
+2. Who may Approve (ACL) — any authenticated user until product amends.
+3. Duplicate spawn policy confirmation (implemented as 409).
+4. Intune device sync: read-side vs mutation (`@security.eng`).
+5. Jira Cloud vs Server/DC MCP URL/auth shape.
+6. Embedding provider that yields 1536 dimensions.
+7. Whether dashboard MVP must list matched pattern / KB citations (payload is already on instance detail).
+8. Webhook-originated approval vs dashboard-only (ingress exists; P0 actor remains dashboard).
+9. When to restore the full HITL remediation path after the Jira-analysis-only slice.
 
 ## Audit
 
-- **Timestamp:** 2026-08-31T21:20:00Z
-- **Persona id:** `project-mgr` (backlog only; implementation Audit will be `backend-eng`)
-- **Action:** `document-setup` (epic backlog)
-- Resolved AAMAD_TARGET_RUNTIME: claude-agent-sdk
-- **Prompt Trace:** omitted (no runtime agent execution)
+- **Timestamp:** 2026-09-01T20:40:00Z (operator local 2026-09-01 ~13:40 PDT)
+- **Persona id:** `backend-eng`
+- **Action:** `develop-be` (Jira-only inspect+comment slice)
+- **Output path:** `project-context/2.build/backend.md`
+- **Resolved AAMAD_TARGET_RUNTIME:** `claude-agent-sdk`
+- **Config loaded:** `aamad.config.yml`
+- **Inputs read:** operator request to inspect a live ticket, evaluate work, post an analysis comment, and stop; PRD/SAD HITL remaining for later MCP tools.
+- **Prompt Trace:** omitted. Analysis prompt is ticket JSON already fetched via `jira_get_ticket`; no secrets in this artifact. Live Atlassian token values are env-only.
+- **Model / temperature / max_tokens:** Cursor Grok 4.6 interactive session. Runtime analysis Activity uses `CLAUDE_MODEL` from env (`allowed_tools=[]`, `max_turns=8`).
+- **Tool usage:** Read/Write for workflow, Jira Cloud REST helper, inspect Activity, tests, this file.
+- **Write method:** in-place under `backend/`, `worker/`, `scripts/`.
+- **Prohibited actions honored:** no other MCP systems; no ticket close/transition; no HITL execution; no secret values in artifacts.
+- **Self-check (required headings):** Sources; Assumptions; Open Questions; Audit.
