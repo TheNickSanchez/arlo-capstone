@@ -1,438 +1,335 @@
-# AAMAD – AI-Assisted Multi-Agent Application Development Framework
+# ARLO — Automated Remediation Loop Orchestrator
 
-**AAMAD** is an open, production-grade framework for building, deploying, and evolving multi-agent applications using best context engineering practices.  
-It systematizes research-driven planning, modular AI agent workflows, and rapid MVP/devops pipelines for enterprise-ready AI solutions.
+ARLO is a human-gated multi-agent system for **enterprise IT and endpoint remediation**. Each work item is a named instance (`ARLO-675`, `ARLO-676`, …) bound 1:1 to a Jira or ServiceNow ticket. The instance investigates with read-only tools, proposes a plan, **sleeps at an approval gate**, and only then may execute state-changing actions on endpoints or tickets.
 
----
+**No endpoint or ticket mutation until a human approves.** That rule is architectural, not a prompt suggestion.
 
-## Table of Contents
-
-- [What is AAMAD?](#what-is-aamad)
-- [What AAMAD is not](#what-aamad-is-not)
-- [Principles and benefits](#principles-and-benefits)
-- [Core Concepts](#core-concepts)
-- [AAMAD phases at a glance](#aamad-phases-at-a-glance)
-- [Installation](#installation)
-- [Using AAMAD in your IDE](#using-aamad-in-your-ide)
-- [Repository Structure](#repository-structure)
-- [Runtime adapters](#runtime-adapters)
-- [How to Use the Framework](#how-to-use-the-framework)
-- [Phase 1: Define Workflow (Product Manager)](#phase-1-define-stage-product-manager)
-- [Phase 2: Build Workflow (Multi-Agent)](#phase-2-build-stage-multi-agent)
-- [Phase 3: Deliver Stage (DevOps)](#phase-3-deliver-stage-devops)
-- [Contributing](#contributing)
-- [License](#license)
+This repository is a capstone MVP built with the [AAMAD](AGENTS.md) framework (v0.7.5). Product scope is defined in [`project-context/1.define/prd.md`](project-context/1.define/prd.md). Architecture is defined in [`project-context/1.define/sad.md`](project-context/1.define/sad.md).
 
 ---
 
-## What is AAMAD?
+## Problem
 
-AAMAD is a context engineering framework based on best practices in AI-assisted coding and multi-agent system development methodologies.  
-It enables teams to:
+Enterprise IT, desktop, and endpoint teams take a continuous stream of tickets for device non-compliance, configuration drift, failed profiles/policies, and related incidents. Operators today context-switch across:
 
-- Launch projects with autonomous or collaborative AI agents
-- Rapidly prototype MVPs with clear context boundaries
-- Use production-ready architecture/design patterns
-- Accelerate delivery, reduce manual overhead, and enable continuous iteration
+- **Jira** or **ServiceNow** (ticket + change)
+- **Jamf** (Apple)
+- **Intune** (Windows / mobile)
+- Internal SOPs / runbooks
 
-In AAMAD, the development crew (personas, rules, templates, and artifacts) is the stable methodology.  
-Runtime adapters are an implementation choice for what backend runtime your generated MVP targets.
+They assemble evidence by hand, draft a plan, wait on change discipline, then click remediations in MDM consoles. Nothing in that loop is a single auditable “run.” Fully autonomous agents that apply profiles, scripts, or policies without a human gate are unacceptable: endpoint mutation and ticket mutation are production-impacting.
 
-You can use AAMAD across multiple development environments: see [Using AAMAD in your IDE](#using-aamad-in-your-ide) for Cursor, Claude Code, and VS Code + GitHub Copilot.
+Typical pain:
 
----
+- Evidence for one ticket is scattered across four consoles.
+- There is no durable, named run identity — state dies when a chat ends.
+- Managers cannot see Investigating vs stuck-on-human vs Executing vs Done across the queue.
+- Change process is skipped or duplicated (no tracking CHG, or a CHG that is disconnected from MDM work).
+- Silent MDM writes and rubber-stamped AI plans are both unacceptable.
 
-## What AAMAD is not
+## Value proposition
 
-- AAMAD is not a programmatic runtime orchestrator for its own Define → Build → Deliver phases.
-- Runtime adapter selection does not change AAMAD phase orchestration; it only changes the runtime conventions used by Build-phase implementation personas.
-- Headless orchestration of AAMAD phases remains out of scope (see current release notes / changelog).
+ARLO is an **Enterprise IT & Endpoint Remediation Specialist** blueprint. Operators spin up a **new instance per ticket**. The instance:
 
----
+1. Investigates using **read-authorized** MCP actions (ticket, asset, Jamf/Intune compliance, official SOPs).
+2. Produces a grounded proposal with an explicit action list.
+3. **Pauses (sleeps)** until a human approves or rejects.
+4. Executes **only the approved** Jamf/Intune remediations, ServiceNow change-request tracking, and Jira ticket mutations.
+5. Validates device state and closes or transitions the ticket per the approved plan.
 
-## Principles and benefits
+Every step is written to an immutable audit log. Sibling instances run concurrently — one HITL sleep does not freeze the queue.
 
-AAMAD changes “vibe coding” from ad-hoc prompting into a **context-first, persona-driven** workflow:
-
-- **Single-responsibility personas** own clear epics (Define → Build → Deliver) with explicit inputs, outputs, and prohibited actions.
-- **Artifacts over chat memory:** PRD, SAD, and phase docs under `project-context/` make decisions auditable and reproducible.
-- **Runtime adapters are an implementation choice** (`AAMAD_TARGET_RUNTIME`), not the methodology itself.
-- **Quality gates** (required headings, optional `aamad validate`, QA → security → deliver) keep MVP scope honest.
-
-**Benefits you can expect:** clearer requirements before code, less rework from underspecified prompts, traceable handoffs between agents, and documentation that stays useful when you re-sync after code changes.
+**What ARLO is not:** an AppSec autofix bot, a source-code patcher, or an unsupervised endpoint agent. Application git/PR/SAST workflows are out of MVP.
 
 ---
 
-## Core Concepts
+## Key features (MVP)
 
-- **Persona-driven development:** Each workflow is owned and documented by a clear AI agent persona with a single responsibility principle.
-- **Context artifacts:** All major actions, decisions, and documentation are stored as markdown artifacts, ensuring explainability and reproducibility.
-- **Quality gates:** Required artifact headings, optional `aamad validate`, and QA → security → deliver sequencing.
-- **Project configuration:** Optional `aamad.config.yml` for shared language, UI, testing, and security preferences across personas.
-- **Documentation sync:** After enhancing generated code, use `prompt-sync-docs` so `project-context/` stays aligned with the implementation.
-- **Parallelizable epics:** Big tasks are broken into epics, making development faster and more autonomous while retaining control over quality.
-- **Reusability:** Framework reusable for any project—simply drop in your PRD/SAD and let the agents execute.
-- **Open, transparent, and community-driven:** All patterns and artifacts are readable, auditable, and extendable.
+| Feature | What operators get |
+|---|---|
+| **Named instance per ticket** | Spawn `ARLO-<id>` mapped 1:1 to an existing Jira or ServiceNow ticket. Two tickets never share a session. |
+| **Read-only investigation** | Ticket context, ServiceNow CHG/asset reads, Jamf compliance + logs, Intune compliance + status refresh, Knowledge Base `kb_search`. No writes. |
+| **Grounded proposal** | Evidence, targeted device IDs, enumerated MCP write actions, validation checks, residual risk, runbook citations. |
+| **Durable approval gate** | Agent **sleeps**. No auto-approve timer. Restarting the app leaves the instance in **Awaiting Approval** with the same proposal. |
+| **Approve / Reject** | Approve records actor, time, and a frozen action list. Reject records rationale and mutates nothing. |
+| **Approved writes only** | Jamf profiles/scripts, Intune policies/remediations, ServiceNow CHG create, Jira summary/transition/close — only if listed on the approved plan. |
+| **Validation before Done** | Re-read compliance/asset. Close or transition the ticket only if those writes were approved and validation criteria passed. |
+| **Fleet dashboard** | Grid of all historical and active runs with status, timestamps, proposal, Approve/Reject, and step-level audit. Not a chat thread. |
+| **Concurrent isolated runs** | At least two instances in different phases at once; one sleep does not block siblings. |
+| **Visible policy deny** | Blocked write attempts are audit events. Fail closed. Never fail open. |
 
----
+### Run statuses
 
-## AAMAD phases at a glance
+| Status | Meaning |
+|---|---|
+| **Investigating** | Trigger accepted through proposal generation (reads + reasoning) |
+| **Awaiting Approval** | Agent sleeping at the HITL gate |
+| **Executing** | Approved writes and/or validation in progress |
+| **Done** | Terminal success |
+| **Rejected** / **Failed** / **Cancelled** | Terminal / operational outcomes so the grid does not lie |
 
-AAMAD organizes work into three phases: Define, Build, and Deliver, each with clear artifacts, personas, and rules to keep development auditable and reusable. 
-The flow begins by defining context and templates, proceeds through multi‑agent build execution, and finishes with operational delivery.
+### Lifecycle
 
-```mermaid
-flowchart LR
-  %% AAMAD phases overview
-  subgraph P1[DEFINE]
-    D1H[ PERSONA ]:::hdr --> D1L["• Product Manager<br/>(@product-mgr)"]:::list
-    D2H[TEMPLATES]:::hdr --> D2L["• System Description<br/>• MRD optional<br/>• PRD / stories"]:::list
-  end
+```
+Trigger (map instance to an existing Jira/SNOW ticket)
+    → Investigation & Research          (reads only)
+    → Proposal / Summary Generation     (no writes)
+    → Approval Gate Pause               (agent sleeps)
+    → Human Approves | Rejects | Cancels
+    → Execution                         (approved writes only)
+    → Validation & Ticket Closure       (Done)
+```
 
-  subgraph P2[BUILD]
-    B1H[AGENTS]:::hdr --> B1L["• Project Mgr<br/>• System Architect<br/>• Frontend / Backend<br/>• Integration / QA<br/>• Security Eng"]:::list
-    B2H[RULES]:::hdr --> B2L["• core<br/>• development‑workflow<br/>• runtime adapter (crewai, claude-agent-sdk, or cursor-sdk)"]:::list
-  end
-
-  subgraph P3[DELIVER]
-    L1H[AGENTS]:::hdr --> L1L["• DevOps Eng"]:::list
-    L2H[RULES]:::hdr --> L2L["• delivery‑workflow<br/>(deploy, CI, user guide)"]:::list
-  end
-
-  P1 --> P2 --> P3
-
-  classDef hdr fill:#111,stroke:#555,color:#fff;
-  classDef list fill:#222,stroke:#555,color:#fff;
-``` 
-
-- **Phase 1 (Define):** Product Manager persona (`@product-mgr`) conducts structured elicitation (recommended), optional MRD for commercial products, and PRD/user stories to standardize project scoping.
-
-- **Phase 2 (Build):** Multi‑agent execution by Project Manager, System Architect, Frontend Engineer, Backend Engineer, Integration Engineer, QA Engineer (unit + integration stages), and (recommended) Security Engineer, governed by core/development-workflow rules and the selected runtime adapter rule.
-
-- **Phase 3 (Deliver):** DevOps Engineer (`@devops.eng`) packages the validated MVP using the `delivery-workflow` rule; artifacts include `project-context/3.deliver/deploy.md` and optionally `user-guide.md`.
+Trigger in MVP is **user-initiated spawn** from the dashboard. Automatic webhook auto-spawn is a later enhancement.
 
 ---
 
-## Installation
+## Architecture
 
-Install AAMAD from PyPI and initialize the framework for your IDE:
+One hardened agent blueprint is cloned into many durable, ticket-mapped instances. Each instance is a state machine. Illegal transitions are product bugs.
+
+### Runtime agents and roles
+
+| Agent | Role | Responsibility | Tools |
+|---|---|---|---|
+| **`arlo`** (coordinator) | Enterprise IT & Endpoint Remediation Specialist | Owns lifecycle phase, HITL sleep, budgets, and audit narrative. Never bypasses the gate. | No MCP writes. May invoke specialists. |
+| **`arlo-investigator`** | Read-only evidence gatherer | Assembles ticket, asset, device compliance/log, and official runbook context. | Read MCP actions + `kb_search` only. Write tools never present. |
+| **Proposal path** | Proposal specialist | Turns the evidence pack into a human-reviewable summary and enumerated action list. | Reads if needed. **No writes.** |
+| **`arlo-executor`** | Approved-plan executor | Applies the frozen action list exactly. Halts on the first unauthorized or failed mutation. | Only write tools listed on the approval record. |
+| **Validation** | Validation specialist | Re-reads compliance/asset. Closes or transitions the ticket only if those writes were approved and criteria passed. | Validation reads; ticket writes iff on the frozen list. |
+
+Collaboration is **sequential per instance** and **concurrent across instances**. Subagent delegation is allowed only to isolate read vs write tool sets and **must not bypass HITL**.
+
+### How the repo implements that loop
+
+| Layer | Responsibility |
+|---|---|
+| **Next.js dashboard** | Spawn form, run grid, instance detail, proposal, Approve/Reject, audit timeline. Never talks to Temporal, MCP, or the model provider. |
+| **FastAPI control plane** | Auth, spawn, persist instance state, start workflows, emit approval Signals, serve list/detail/audit. |
+| **PostgreSQL** | Users, instance metadata, frozen proposal, approval records, mirrored audit, shared operational memory, vector Knowledge Base. |
+| **Temporal** | One Workflow per `ARLO-<id>`. The approval gate is a **Signal wait** — the worker, LLM session, and MCP connections are not held while a human decides. |
+| **Temporal Worker + Claude Agent SDK** | Investigation, proposal, execution, and validation run **inside Activities**. Write tools are absent from `allowed_tools` until an approval record exists. A `PreToolUse` policy enforcement point denies writes otherwise. |
+| **MCP servers** | Authorized actions only for Jira, ServiceNow, Jamf, Intune, and internal `kb_search`. Capstone may use stdio stubs when live tenants are unavailable. Stubs must still obey HITL. |
+
+Selected runtime: **`claude-agent-sdk`** (Python). Set `AAMAD_TARGET_RUNTIME=claude-agent-sdk` in every Build/CI shell — if unset, the AAMAD adapter registry defaults to `crewai`.
+
+Logical architecture (SAD):
+
+![ARLO logical architecture](project-context/1.define/diagrams/arlo-logical-architecture.png)
+
+### Authorized MCP surface (product, not implementation)
+
+**Reads** (Investigation; Validation where specified): Jira ticket context; ServiceNow existing CHGs + asset data; Jamf compliance + logs; Intune compliance + device-status refresh; Knowledge Base `kb_search` (Investigation only).
+
+**Writes** (Execution / Validation only, and only if on the approved plan): Jira post summary / transition / close; ServiceNow create CHG; Jamf apply approved profile or script; Intune apply approved policy or remediation.
+
+Explicitly unauthorized in MVP: wipe/retire/lock device; identity or network changes; arbitrary unsigned scripts; expanding scope to devices not in the ticket/proposal; Knowledge Base writes; any mutation not on the approved list.
+
+---
+
+## Getting started
+
+### Prerequisites
+
+| Tool | Notes |
+|---|---|
+| **Python** 3.11+ | API + Temporal worker (`requires-python >=3.11`) |
+| **Node.js** LTS + npm | Next.js dashboard under `frontend/` |
+| **Docker** + Compose | PostgreSQL (pgvector), Temporal, optional LiteLLM and app images |
+| **Anthropic-compatible API key** | Direct Anthropic or a LiteLLM virtual key (`ANTHROPIC_API_KEY`) |
+
+### 1. Pin the runtime and install
 
 ```bash
-pip install aamad
-# or
-uv pip install aamad
+source scripts/set-runtime.sh          # export AAMAD_TARGET_RUNTIME=claude-agent-sdk
+./scripts/setup.sh                     # venv, pip install -e ".[dev]", npm install
 ```
 
-### Multi-IDE support
+`setup.sh` copies `.env.example` → `.env` if `.env` is missing.
 
-AAMAD supports **Cursor**, **Claude Code**, and **VS Code + GitHub Copilot**. Choose your IDE with the `--ide` flag:
+### 2. Configure environment
+
+Edit `.env`. Fill secrets locally. **Never commit `.env`.**
+
+Required for a local loop:
+
+| Variable | Purpose |
+|---|---|
+| `AAMAD_TARGET_RUNTIME` | Must be `claude-agent-sdk` |
+| `ANTHROPIC_API_KEY` | LiteLLM virtual key or Anthropic key |
+| `ANTHROPIC_BASE_URL` | `http://localhost:4000` with local LiteLLM; empty for direct Anthropic |
+| `DATABASE_URL` | PostgreSQL (Compose default: `postgresql://arlo:arlo@localhost:5432/arlo`) |
+| `TEMPORAL_ADDRESS` | `localhost:7233` on the host |
+| `ARLO_SESSION_SECRET` | Long random string for session/JWT signing |
+| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000` |
+| `ARLO_ADMIN_PASSWORD` | Local seed admin (optional; `scripts/seed_admin.py`) |
+
+MCP URLs/tokens are for live tenants. Leave them empty and use stdio stub commands when demonstrating without Jamf/Intune/Jira/ServiceNow access. Stubs must not report write success that skipped the approval gate.
+
+### 3. Start infrastructure
 
 ```bash
-aamad init --ide cursor        # Default: Cursor
-aamad init --ide claude-code  # Claude Code
-aamad init --ide vscode       # VS Code + GitHub Copilot
+docker compose up                      # postgres :5432, temporal :7233, temporal-ui :8088
 ```
 
-#### Framework feature implementation by IDE
+Optional model proxy:
 
-| Feature | Cursor | Claude Code | VS Code + Copilot |
-| :------ | :----- | :---------- | :---------------- |
-| **Rules / instructions** | `.cursor/rules/*.mdc` with `alwaysApply: true` | `.claude/CLAUDE.md` + `.claude/rules/*.md` | `.github/instructions/*.instructions.md` |
-| **Rule format** | `.mdc` (YAML frontmatter + markdown body) | `.md` (plain markdown) | `.instructions.md` (`applyTo`, `name`, `description`) |
-| **Glob-based scoping** | ✅ `globs:` in frontmatter | ❌ Not supported (all rules loaded) | ✅ `applyTo:` in frontmatter |
-| **Agent definitions** | `.cursor/agents/*.md` | `.claude/agents/*.md` | `.github/agents/*.agent.md` |
-| **Agent invocation** | `@agent-name` in chat | Delegation via `description`; explicit request | Agent dropdown; `@agent-name`; handoff buttons |
-| **Tool enforcement** | Instructions-based | ✅ Hard allowlist/denylist | ✅ Tool allowlist in frontmatter |
-| **Phase 1 prompt** | `.cursor/prompts/prompt-phase-1` | `.claude/commands/phase-1-define.md` (slash command) | `.github/prompts/phase-1-define.prompt.md` |
-| **Templates** | `.cursor/templates/` (shared) | `.cursor/templates/` (shared) | `.cursor/templates/` (shared) |
-| **Project context** | `project-context/` (shared) | `project-context/` (shared) | `project-context/` (shared) |
-| **Bridge file** | `AGENTS.md` (root) | `AGENTS.md` (root) | `AGENTS.md` (root) |
+```bash
+docker compose --profile litellm up
+```
+
+### 4. Run the application (host processes)
+
+```bash
+# API (Alembic runs on startup)
+.venv/bin/uvicorn backend.app.main:app --reload --port 8000
+
+# Temporal worker (separate terminal)
+.venv/bin/python -m worker.main
+
+# Dashboard (separate terminal)
+cd frontend && npm run dev
+```
+
+Or, after images are built:
+
+```bash
+docker compose --profile app up        # api :8000, worker, frontend :3000
+```
+
+### 5. Seed a local admin (optional)
+
+```bash
+.venv/bin/python scripts/seed_admin.py
+```
+
+### Local endpoints
+
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:3000 |
+| API liveness | http://localhost:8000/health |
+| API readiness | http://localhost:8000/ready (PostgreSQL + Temporal) |
+| Temporal UI | http://localhost:8088 |
+
+### Tests and lint
+
+```bash
+source scripts/set-runtime.sh
+.venv/bin/pytest
+.venv/bin/ruff check backend worker
+cd frontend && npm run lint
+```
 
 ---
 
-### Cursor
-
-**Install and initialize:**
-
-```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install aamad
-aamad init --ide cursor --dest .
-```
-
-Or with uv:
-
-```bash
-uv venv
-uv pip install aamad
-uv run aamad init --ide cursor --dest .
-```
-
-**Folder structure after init:**
+## Project structure
 
 ```
-your-project/
-├── .cursor/
-│   ├── agents/          # Persona definitions (@product-mgr, @backend.eng, etc.)
-│   ├── prompts/         # Phase-specific prompts (e.g. prompt-phase-1)
-│   ├── rules/           # Always-on rules (*.mdc)
-│   └── templates/      # PRD, SAD, MR templates
+arlo-capstone/
+├── aamad.config.yml                 # Runtime, language, UI, security, testing preferences
+├── AGENTS.md                        # AAMAD persona index
+├── CHECKLIST.md                     # Phase 1–3 execution checklist
+├── pyproject.toml                   # Shared Python package (API + worker)
+├── docker-compose.yml               # postgres, temporal, api, worker, frontend, litellm
+├── .env.example                     # Secret *names* only
+│
+├── backend/                         # FastAPI control plane
+│   ├── app/                         # API, domain, models, services, security
+│   └── migrations/                  # Alembic (0001_initial_schema)
+│
+├── worker/                          # Temporal worker + Claude Agent SDK
+│   ├── workflows/                   # ArloRemediationWorkflow + approval Signal
+│   ├── activities/                  # investigate, proposal, execute, validate
+│   ├── mcp/                         # SDK client, registry, stubs, kb_search
+│   └── pep.py                       # PreToolUse / PostToolUse policy + audit
+│
+├── frontend/                        # Next.js App Router dashboard
+│   └── app/                         # /, /runs/[arloId], /login
+│
+├── docker/                          # Dockerfiles, postgres init, LiteLLM, Temporal
+├── scripts/                         # setup, runtime pin, compose wrapper, seed admin
+│
 ├── project-context/
-│   ├── 1.define/        # MRD, PRD, SAD outputs
-│   ├── 2.build/         # setup.md, frontend.md, backend.md, etc.
-│   └── 3.deliver/       # deploy runbook and configs
-├── AGENTS.md            # Bridge file (IDE discoverability)
-├── CHECKLIST.md
-└── README.md
+│   ├── 1.define/                    # PRD, SAD, MRD, architecture diagrams
+│   ├── 2.build/                     # setup, backend, frontend, integration, qa, security
+│   └── 3.deliver/                   # deploy.md + user-guide.md (after QA + security)
+│
+└── .cursor/
+    ├── agents/                      # Persona contracts (@product-mgr, @backend.eng, …)
+    ├── rules/                       # AAMAD core + runtime adapter rules
+    └── templates/                   # Artifact templates
 ```
 
----
-
-### Claude Code
-
-**Install and initialize:**
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install aamad
-aamad init --ide claude-code --dest .
-```
-
-Or with uv:
-
-```bash
-uv venv
-uv pip install aamad
-uv run aamad init --ide claude-code --dest .
-```
-
-**Folder structure after init:**
-
-```
-your-project/
-├── .claude/
-│   ├── CLAUDE.md        # Rules summary + cross-references
-│   ├── agents/          # Persona definitions (Claude Code format)
-│   ├── commands/        # Slash commands (e.g. phase-1-define)
-│   ├── rules/           # Individual rule files (*.md)
-│   └── settings.json    # Permissions, AAMAD_TARGET_RUNTIME env
-├── .cursor/
-│   └── templates/       # PRD, SAD, MR templates (shared)
-├── project-context/
-│   ├── 1.define/
-│   ├── 2.build/
-│   └── 3.deliver/
-├── AGENTS.md
-├── CHECKLIST.md
-└── README.md
-```
+**Correspondence rule:** instance id `ARLO-<id>` = Temporal Workflow Id = PostgreSQL `instances.arlo_id` = dashboard row key. UI, API, Workflow, and database use the same status vocabulary.
 
 ---
 
-### VS Code + GitHub Copilot
+## Who this is for
 
-**Install and initialize:**
-
-```bash
-pip install aamad
-aamad init --ide vscode --dest .
-```
-
-Or with uv:
-
-```bash
-uv pip install aamad
-uv run aamad init --ide vscode --dest .
-```
-
-**Folder structure after init:**
-
-```
-your-project/
-├── .github/
-│   ├── instructions/   # Copilot instructions (*.instructions.md)
-│   ├── agents/         # Custom agents (*.agent.md) with optional handoffs
-│   └── prompts/        # Phase 1 prompt (phase-1-define.prompt.md)
-├── .vscode/
-│   └── settings.json   # chat.instructionsFilesLocations, chat.agentFilesLocations
-├── .cursor/
-│   └── templates/      # PRD, SAD, MR templates (shared)
-├── project-context/
-│   ├── 1.define/
-│   ├── 2.build/
-│   └── 3.deliver/
-├── AGENTS.md
-├── CHECKLIST.md
-└── README.md
-```
-
-**Required extensions:** GitHub Copilot, GitHub Copilot Chat. Recommended: Python (ms-python), YAML (redhat).
+| Persona | Job in ARLO |
+|---|---|
+| **IT Support / Service Desk** | Spawn an instance on a ticket; watch Investigating → Awaiting Approval; hand the approval card to the right owner. |
+| **Endpoint / MDM Administrator** | Approve or reject proposed Jamf/Intune actions with enough evidence to be safe. |
+| **Change / IT Operations Lead** | Confirm existing CHGs were checked and tracking CHGs are created only after approval. |
+| **IT / Engineering Manager** | Grid of all historical and active runs — who approved what — without opening 40 MDM consoles. |
 
 ---
 
-### Using AAMAD in your IDE
+## Next steps for contributors
 
-How you interact with AAMAD depends on your IDE. The framework produces the same artifacts (`project-context/`, templates, Phase 1 prompt); only rules and agent scaffolding differ.
+Work is sequenced by AAMAD personas. Do not invent product scope — if it is not in the PRD, it is not MVP.
 
-#### Workflow and context (per IDE)
+### Remaining Build / Deliver work
 
-| What you do | Cursor | Claude Code | VS Code + Copilot |
-| :---------- | :----- | :---------- | :---------------- |
-| **Start a fresh context** (e.g. new module) | `Cmd+Shift+P` → **New Chat** | `/clear` or start a new session | Start a new chat session |
-| **Invoke a persona** | Type `@backend.eng` (or other agent) in chat | Ask to use the subagent by name, or refer to its description | Pick the agent from the dropdown, or use `@agent-name` |
-| **Reference a file** | `@path/to/file` in chat | `@path/to/file` in the prompt | `#file:path/to/file` or drag-and-drop the file |
-| **Phase transitions** (Define → Build → Deliver) | Switch persona manually in chat | Use subagent chaining or explicit instructions | Use **handoff** buttons in the chat UI (when configured) |
+1. **`@integration.eng`** — Replace the frontend mock services with the FastAPI client (`POST /instances`, list/detail/audit, Approve/Reject with `proposal_hash`, session auth). The UI must never call Temporal, MCP, or Anthropic.
+2. **`@qa.eng`** — Unit + integration + smoke against PRD `FR-P0-*` / `UI-P0-*`. Required bar: unapproved mutations = **zero**; HITL bypass blocked **100%**; ≥ 2 concurrent isolated instances.
+3. **`@security.eng`** — Required before Deliver (`security.require_security_assessment: true`). Secrets, PEP layers, attributable Approve, dependency audit.
+4. **`@devops.eng`** — `project-context/3.deliver/deploy.md` + `user-guide.md`. Generate CI config only; do not trigger a live production deploy without operator authorization.
 
-#### Capability comparison
+Invoke personas in Cursor as `@product-mgr`, `@system.arch`, `@project.mgr`, `@frontend.eng`, `@backend.eng`, `@integration.eng`, `@qa.eng`, `@security.eng`, `@devops.eng`. See [`AGENTS.md`](AGENTS.md) and [`CHECKLIST.md`](CHECKLIST.md). Run `aamad validate` to check artifact quality gates.
 
-| Capability | Cursor | Claude Code | VS Code + Copilot |
-| :--------- | :----- | :---------- | :---------------- |
-| **AAMAD support** | Native (default) | Via `aamad init --ide claude-code` | Via `aamad init --ide vscode` |
-| **Glob-based rule scoping** | Yes | No (all rules loaded) | Yes (`applyTo:` in instructions) |
-| **Tool enforcement** | Instructions only | Hard allowlist/denylist | Tool allowlist in agent frontmatter |
-| **Agent handoffs** | Manual | Manual or subagent chaining | Native UI buttons (Define → Build → Deliver) |
-| **Parallel work** | Multiple chat tabs | Subagents / Agent Teams | Subagents |
-| **Model choice** | Multi-model | Claude models | Multi-model (GPT, Claude, Gemini, etc.) |
-| **Best for** | AAMAD as designed | CLI-first, solo use | Teams, enterprise, model diversity |
+### Product backlog (not MVP)
 
-#### What is the same in all IDEs
+**P1**
 
-These are **IDE-agnostic** — no change when you switch:
+- Auto-spawn from Jira/ServiceNow webhooks when a ticket is created or labeled.
+- Request-changes loop (human comments; instance re-enters Investigation without executing).
+- KEV/severity/SLA badges on the grid.
+- Filter/export audit log; richer duplicate-ticket / existing-CHG intelligence.
 
-- **`project-context/`** — Directory layout and all Phase 1/2/3 outputs (MRD, PRD, SAD, setup.md, frontend.md, backend.md, integration.md, qa.md).
-- **Templates** — PRD, SAD, MR templates (in `.cursor/templates/`; shared across IDEs).
-- **Phase 1 prompt** — Usable in any AI chat; same content in Cursor prompts, Claude Code commands, or VS Code prompts.
-- **Crew logic and artifacts** — The same persona/rules/templates methodology regardless of IDE.
-- **Git and dependency setup** — Same repo and `pyproject.toml` workflow.
+**P2 / explicitly out of MVP**
 
-What **does** change per IDE: where rules and agents live (`.cursor/`, `.claude/`, or `.github/`) and how you invoke personas and reference files (see table above).
+- AppSec / git / draft-PR / SAST loop (researched in the MRD, **superseded** by this PRD’s IT/endpoint scope).
+- Graduated autonomy, device wipe/retire/lost mode, identity or network changes.
+- Batch approve, multi-ticket bulk orchestration, enterprise SSO/IAM, multi-tenant SaaS.
+- Auto-merge, auto-close without validation, or auto-approve on timeout — these stay forbidden.
 
----
+### Contributor rules of the road
 
-**CLI flags:**
-
-- `--dest PATH` — Output directory (default: current directory)
-- `--ide {cursor,claude-code,vscode}` — Target IDE (default: cursor)
-- `--overwrite` — Allow replacing existing files
-- `--dry-run` — Preview what would be written
-
-Inspect bundle contents: `aamad bundle-info --verbose` or `aamad bundle-info --ide claude-code`. For `--ide vscode`, artifacts are generated from the Cursor bundle (no separate bundle).
+- **PRD is scope-authoritative.** The MRD targeted an AppSec/code concept; do not revive git write or scanner scope without an explicit PRD amendment.
+- **HITL is architecture.** Write-capable tools stay out of `allowed_tools` until an approval record exists. A policy enforcement point outside the model is the last-line deny.
+- **Fail closed.** Missing approval, rejection, MCP unavailable, or policy deny never “helpfully” continues into writes.
+- **Secrets stay in environment variables.** Commit names from `.env.example` only. Never put tokens in artifacts, Prompt Trace, Jira comments, CHGs, or the audit UI.
+- **Prefer stubs that tell the truth.** If live Jamf/Intune/Jira/ServiceNow tenants are unavailable, stubs must still refuse unapproved writes.
 
 ---
 
-## Repository Structure
+## Documentation map
 
-    aamad/
-    ├─ .cursor/
-    │   ├─ agents/       # Agent persona definitions
-    │   ├─ prompts/      # Phase-specific prompts
-    │   ├─ rules/        # Architecture, workflow, epics rules
-    │   └─ templates/    # PRD, SAD, MR templates
-    ├─ project-context/
-    │   ├─ 1.define/     # PRD, SAD, research reports
-    │   ├─ 2.build/      # Setup, frontend, backend, integration, QA
-    │   └─ 3.deliver/    # deploy runbook and configs
-    ├─ docs/
-    ├─ CHECKLIST.md
-    └─ README.md
-
-**Framework artifacts** in `.cursor/` are the source for both Cursor and Claude Code bundles.  
-**Project-context** is IDE-agnostic and shared across all IDEs.
+| Artifact | Path |
+|---|---|
+| Product requirements | [`project-context/1.define/prd.md`](project-context/1.define/prd.md) |
+| System architecture | [`project-context/1.define/sad.md`](project-context/1.define/sad.md) |
+| Market research (AppSec-era; HITL/concurrency only) | [`project-context/1.define/mrd.md`](project-context/1.define/mrd.md) |
+| Frontend functional spec | [`frontend-functional-spec.md`](frontend-functional-spec.md) |
+| Setup / env / Compose | [`project-context/2.build/setup.md`](project-context/2.build/setup.md) |
+| Backend epic | [`project-context/2.build/backend.md`](project-context/2.build/backend.md) |
+| Frontend epic | [`project-context/2.build/frontend.md`](project-context/2.build/frontend.md) |
+| AAMAD personas | [`AGENTS.md`](AGENTS.md) |
 
 ---
 
-## Runtime adapters
+## License and notices
 
-Use `AAMAD_TARGET_RUNTIME` to choose the runtime target for the generated multi-agent application in Phase 2:
-
-| Runtime | Status | Best fit |
-| :------ | :----- | :------- |
-| `crewai` | Default | Declarative task orchestration with YAML-first runtime configuration |
-| `claude-agent-sdk` | Supported | Agentic runtime harness with hooks, MCP, and session control |
-| `cursor-sdk` | Supported | TypeScript-first Cursor runtime integration with explicit tool/runtime contracts |
-
----
-
-## How to Use the Framework
-
-1. **Install** (recommended): `pip install aamad` then `aamad init --ide <cursor|claude-code|vscode>`
-2. **Optional project config:** copy `aamad.config.example.yml` → `aamad.config.yml` and set language, UI, testing, and security preferences.
-3. **Select runtime target** for Phase 2 (for example `AAMAD_TARGET_RUNTIME=crewai`, `AAMAD_TARGET_RUNTIME=claude-agent-sdk`, or `AAMAD_TARGET_RUNTIME=cursor-sdk`).
-4. Confirm your IDE has the full agent, prompt, and rule set.
-5. Follow `CHECKLIST.md` for the Define → Build → Deliver workflow (start Phase 1 with `*elicit-requirements` when the use case is specialized).
-6. Each agent persona executes its epic(s), producing markdown artifacts and code.
-7. Run `aamad validate --phase define|build|deliver` at phase gates to check required artifacts and Audit headings.
-8. Review, test, and launch the MVP. After code changes that drift from docs, use `.cursor/prompts/prompt-sync-docs` (Claude Code: `/sync-docs`) to resynchronize `project-context/`.
-
----
-
-## Phase 1: Define Stage (Product Manager)
-
-The Product Manager persona (`@product-mgr`) conducts discovery and context setup to standardize project scoping:
-
-- **Elicitation (recommended):** Structured questionnaire → `system-description.md` via `*elicit-requirements`
-- **Market Research (optional):** MRD using `.cursor/templates/mrd-template.md` for commercial products; skip for internal/personal tools
-- **Requirements:** PRD using `.cursor/templates/prd-template.md`
-- **User stories:** MVP stories for architecture and QA traceability
-- **Project config:** Optional `aamad.config.yml` for language, UI, testing, and security defaults
-- **Validation:** Run `aamad validate --phase define` when artifacts exist
-
-Phase 1 outputs are stored in `project-context/1.define/` and provide the foundation for all subsequent development phases.
-
----
-
-## Phase 2: Build Stage (Multi-Agent)
-
-Each role is embodied by an agent persona, defined in `.cursor/agents/` (Cursor), `.claude/agents/` (Claude Code), or `.github/agents/` (VS Code).  
-Before implementation, set `AAMAD_TARGET_RUNTIME` to the target backend runtime (`crewai` default, `claude-agent-sdk` supported, `cursor-sdk` supported).
-Phase 2 is executed by running each epic in sequence after completing Phase 1:
-
-- **Architecture:** Generate solution architecture document (`sad.md`)
-- **Setup:** Scaffold environment, install dependencies, and document (`setup.md`)
-- **Frontend:** Build UI + placeholders, document (`frontend.md`)
-- **Backend:** Implement backend for the selected runtime, document (`backend.md`)
-- **Integration:** Wire up chat flow, verify, document (`integration.md`)
-- **Quality Assurance:** Run `*test-unit` and `*test-integration`, then smoke/acceptance (`*qa`); map tests to acceptance-criteria IDs when present; log in `qa.md`
-- **Security (recommended):** `@security.eng` → `security.md` before Deliver (required when `aamad.config.yml` sets `security.require_security_assessment: true`)
-
-Artifacts are versioned and stored in `project-context/2.build` for traceability.
-
----
-
-## Phase 3: Deliver Stage (DevOps)
-
-After QA (and preferably security), invoke `@devops.eng`:
-
-- **Release readiness:** Confirm `qa.md` (and note `security.md` status)
-- **Deploy / CI:** Minimal deploy and pipeline config aligned with SAD and `AAMAD_TARGET_RUNTIME`
-- **Runbook:** `project-context/3.deliver/deploy.md` (hosting, env matrix, access, rollback)
-- **User docs:** `*document-user-guide` → `project-context/3.deliver/user-guide.md`
-- **Validate:** `aamad validate --phase deliver`
-
----
-
-## Contributing
-
-Contributions are welcome!  
-- Open an issue for bugs/feature ideas/improvements.
-- Submit pull requests with extended templates, new agent personas, or bug fixes.
-- Help evolve the knowledge base and documentation for greater adoption.
-- When modifying `.cursor/` or `project-context/`, run `python scripts/update_bundle.py` to refresh both Cursor and Claude Code bundles before publishing.
-
----
-
-## License
-
-Licensed under Apache License 2.0.
-
-> Why Apache-2.0
->    Explicit patent grant and patent retaliation protect maintainers and users from patent disputes, which is valuable for AI/ML methods, agent protocols, and orchestration logic.
->    Permissive terms enable proprietary or closed-source usage while requiring attribution and change notices, which encourages integration into enterprise stacks.
->    Compared to MIT/BSD, Apache-2.0 clarifies modification notices and patent rights, reducing legal ambiguity for contributors and adopters.
-
----
-
-> For detailed step-by-step Phase 2 execution, see [CHECKLIST.md](CHECKLIST.md).  
-> For advanced reference and prompt engineering, see `.cursor/templates/` and `.cursor/rules/`.
+Capstone / internal operational MVP. No commercial go-to-market, pricing, or packaging. Third-party systems (Jira, ServiceNow, Jamf, Intune, Anthropic, Temporal) remain under their own terms. Do not embed vendor secrets in this repository.

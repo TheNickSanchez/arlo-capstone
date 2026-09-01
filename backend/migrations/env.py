@@ -1,28 +1,59 @@
-"""Alembic env. Reads DATABASE_URL. Revisions and models belong to @backend.eng."""
+"""Alembic env (SAD §4). Reads DATABASE_URL; targets ORM metadata for autogenerate.
+
+Migrations run with the synchronous `psycopg` (v3) driver regardless of the
+app's async `asyncpg` engine, so `alembic upgrade head` has no event-loop
+dependency and can run as a plain startup/CI step.
+"""
 
 from __future__ import annotations
 
 import os
+import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from backend.app.config import settings
+from backend.app.models import Base
+
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False is required when Alembic runs inside the
+    # FastAPI lifespan: uvicorn has already configured logging, and the default
+    # fileConfig(disable_existing_loggers=True) can deadlock the startup task.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-database_url = os.environ.get("DATABASE_URL")
+
+def _sync_url(database_url: str) -> str:
+    if database_url.startswith("postgresql+asyncpg://"):
+        return database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return database_url
+
+
+database_url = os.environ.get("DATABASE_URL") or settings.database_url
 if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
+    config.set_main_option("sqlalchemy.url", _sync_url(database_url))
 
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
-    context.configure(url=url, target_metadata=target_metadata, literal_binds=True)
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        compare_type=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
@@ -34,7 +65,11 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+        )
         with context.begin_transaction():
             context.run_migrations()
 
