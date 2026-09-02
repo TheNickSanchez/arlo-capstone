@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     investigation_timeout_seconds: int = 900
     execution_max_turns: int = 16
     execution_timeout_seconds: int = 900
+    jamf_test_policy_id: int = 1460
+    jamf_test_event: str = "arlo_test"
+    arlo_script_test_max_attempts: int = 3
     embedding_api_key: str = ""
     embedding_base_url: str = ""
     embedding_model: str = "text-embedding-3-small"

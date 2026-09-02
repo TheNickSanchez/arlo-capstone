@@ -6,6 +6,7 @@ from backend.app.models.base import Base
 from backend.app.models.instance import Instance
 from backend.app.models.kb_article import KbArticle
 from backend.app.models.learned_pattern import LearnedPattern
+from backend.app.models.run_artifact import RunArtifact
 from backend.app.models.user import User
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "Instance",
     "KbArticle",
     "LearnedPattern",
+    "RunArtifact",
     "User",
 ]

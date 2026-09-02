@@ -22,7 +22,7 @@ from backend.app.schemas.evidence import EvidencePack
 from backend.app.schemas.proposal import ProposalPayload
 from backend.app.services.audit import append_audit_event
 from worker.activities.common import record_diagnostic, run_claude_query, transition_status
-from worker.mcp.agents import coordinator_agents
+from worker.agents import specialist_agents
 from worker.mcp.claude_client import build_claude_options
 from worker.mcp.kb_search_server import build_kb_search_server
 from worker.pep import build_hooks
@@ -71,7 +71,7 @@ async def generate_proposal(input: GenerateProposalInput) -> dict:
     options = build_claude_options(
         system_prompt=system_prompt,
         allowed_tools=read_tool_names(Phase.PROPOSAL),
-        agents=coordinator_agents(),
+        agents=specialist_agents(),
         mcp_servers={"kb": build_kb_search_server()},
         hooks=build_hooks(
             arlo_id=input.arlo_id,

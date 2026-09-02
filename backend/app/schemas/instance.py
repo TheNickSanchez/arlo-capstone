@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.artifact import LatestArtifacts
 from backend.app.schemas.proposal import ProposalPayload
 
 TicketSystem = Literal["jira", "servicenow"]
@@ -69,6 +70,7 @@ class InstanceDetail(BaseModel):
     proposal: ProposalPayload | None = None
     proposal_hash: str | None = None
     latest_approval: ApprovalSummary | None = None
+    latest_artifacts: LatestArtifacts | None = None
 
 
 class AuditEventOut(BaseModel):

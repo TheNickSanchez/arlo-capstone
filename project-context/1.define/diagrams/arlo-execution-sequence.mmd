@@ -27,10 +27,14 @@ sequenceDiagram
   KBT->>KB: vector similarity VECTOR 1536
   KB-->>KBT: top runbook chunks
   KBT-->>A: hits for prompt grounding
-  A->>M: Read-only vendor MCP
+  A->>M: Read-only vendor MCP via discovery_agent
   M-->>A: Ticket CHG existence assets compliance logs
-  A->>PG: Audit memory_retrieve kb_search vendor reads
+  A->>PG: Persist discovery_pack artifact plus audit
   A-->>T: Evidence pack
+  W->>T: Schedule Activity write_script
+  T->>A: Activity Task write_script script_writer_agent
+  A->>PG: Persist generated_script attempt 0
+  A-->>T: script artifact
   W->>T: Schedule Activity generate_proposal
   T->>A: Activity Task generate_proposal
   A->>PG: Store proposal and hash status Awaiting Approval
@@ -38,9 +42,9 @@ sequenceDiagram
   Note over W,T: wait_condition on Signal. Workflow Task completes and worker slot is freed. No Claude session, no MCP connection.
 
   loop Poll MVP
-    UI->>API: GET /instances and GET /instances/ARLO-680
-    API->>PG: Read metadata and audit
-    API-->>UI: Awaiting Approval plus proposal
+    UI->>API: GET /instances/ARLO-680 and /artifacts and /audit
+    API->>PG: Read metadata proposal artifacts audit
+    API-->>UI: Awaiting Approval plus Proposal Script Test Logs Audit Trail tabs
   end
 
   User->>UI: Approve visible proposal and audit
@@ -48,9 +52,21 @@ sequenceDiagram
   API->>PG: INSERT approval frozen actions
   API->>T: Signal approval_decision
   T->>W: Workflow Task replay plus Signal
+  loop Policy 1460 test until exit 0 or max attempts
+    W->>T: Schedule Activity execute_jamf_test
+    T->>A: Activity Task jamf_ops_agent
+    A->>A: PreToolUse PEP
+    A->>M: jamf_upload_script jamf_policy_set_script jamf_execute_test_policy
+    A->>PG: Persist test_execution_log
+    alt exit_code != 0 and attempts remain
+      W->>T: Schedule Activity write_script refactor
+      T->>A: script_writer_agent no MCP
+      A->>PG: Persist generated_script next attempt
+    end
+  end
   W->>T: Schedule Activity execute_approved
   T->>A: Activity Task execute_approved
-  A->>A: PreToolUse PEP writes in frozen list
+  A->>A: PreToolUse PEP remaining frozen writes
   A->>M: Approved writes only
   A->>PG: Audit per action
   A-->>T: Execution results

@@ -92,11 +92,11 @@ One hardened agent blueprint is cloned into many durable, ticket-mapped instance
 
 | Agent | Role | Responsibility | Tools |
 |---|---|---|---|
-| **`arlo`** (coordinator) | Enterprise IT & Endpoint Remediation Specialist | Owns lifecycle phase, HITL sleep, budgets, and audit narrative. Never bypasses the gate. | No MCP writes. May invoke specialists. |
-| **`arlo-investigator`** | Read-only evidence gatherer | Assembles ticket, asset, device compliance/log, and official runbook context. | Read MCP actions + `kb_search` only. Write tools never present. |
-| **Proposal path** | Proposal specialist | Turns the evidence pack into a human-reviewable summary and enumerated action list. | Reads if needed. **No writes.** |
-| **`arlo-executor`** | Approved-plan executor | Applies the frozen action list exactly. Halts on the first unauthorized or failed mutation. | Only write tools listed on the approval record. |
-| **Validation** | Validation specialist | Re-reads compliance/asset. Closes or transitions the ticket only if those writes were approved and criteria passed. | Validation reads; ticket writes iff on the frozen list. |
+| **`arlo_orchestrator`** | Enterprise IT & Endpoint Remediation Specialist | Owns lifecycle phase, HITL sleep, budgets, and specialist dispatch. Never bypasses the gate. | No MCP writes. May invoke specialists. |
+| **`discovery_agent`** | Read-Only Investigator | Assembles ticket, asset, device compliance/log, and official runbook context. Persists a discovery pack. | Read MCP actions + `kb_search` only. Write tools never present. |
+| **`script_writer_agent`** | Remediation Developer | Drafts or refactors Zsh / PowerShell from OS requirements or Policy 1460 test logs. | **No MCP tools.** Script text is an artifact. |
+| **`jamf_ops_agent`** | Fleet Executor | After HITL: upload script, bind Policy 1460, run event `arlo_test`. | `jamf_upload_script`, `jamf_policy_set_script`, `jamf_execute_test_policy` only (frozen list). |
+| **Validation** | Validation specialist (orchestrator) | Re-reads compliance/asset. Closes or transitions the ticket only if those writes were approved and criteria passed. | Validation reads; ticket writes iff on the frozen list. |
 
 Collaboration is **sequential per instance** and **concurrent across instances**. Subagent delegation is allowed only to isolate read vs write tool sets and **must not bypass HITL**.
 
@@ -104,9 +104,9 @@ Collaboration is **sequential per instance** and **concurrent across instances**
 
 | Layer | Responsibility |
 |---|---|
-| **Next.js dashboard** | Spawn form, run grid, instance detail, proposal, Approve/Reject, audit timeline. Never talks to Temporal, MCP, or the model provider. |
-| **FastAPI control plane** | Auth, spawn, persist instance state, start workflows, emit approval Signals, serve list/detail/audit. |
-| **PostgreSQL** | Users, instance metadata, frozen proposal, approval records, mirrored audit, shared operational memory, vector Knowledge Base. |
+| **Next.js dashboard** | Spawn form, run grid, instance detail tabs (Proposal, Script, Test Logs, Audit Trail), Approve/Reject. Never talks to Temporal, MCP, or the model provider. |
+| **FastAPI control plane** | Auth, spawn, persist instance state, start workflows, emit approval Signals, serve list/detail/artifacts/audit. |
+| **PostgreSQL** | Users, instance metadata, frozen proposal, approval records, run artifacts, mirrored audit, shared operational memory, vector Knowledge Base. |
 | **Temporal** | One Workflow per `ARLO-<id>`. The approval gate is a **Signal wait** — the worker, LLM session, and MCP connections are not held while a human decides. |
 | **Temporal Worker + Claude Agent SDK** | Investigation, proposal, execution, and validation run **inside Activities**. Write tools are absent from `allowed_tools` until an approval record exists. A `PreToolUse` policy enforcement point denies writes otherwise. |
 | **MCP servers** | Authorized actions only for Jira, ServiceNow, Jamf, Intune, and internal `kb_search`. Capstone may use stdio stubs when live tenants are unavailable. Stubs must still obey HITL. |

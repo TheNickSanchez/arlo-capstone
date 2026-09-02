@@ -130,6 +130,30 @@ _CATALOG: tuple[ActionSpec, ...] = (
         "Apply approved configuration profile or script",
     ),
     ActionSpec(
+        McpSystem.JAMF,
+        "upload_script",
+        "jamf_upload_script",
+        ActionKind.WRITE,
+        frozenset({Phase.EXECUTION}),
+        "Upload approved script content to Jamf (PRD apply approved scripts)",
+    ),
+    ActionSpec(
+        McpSystem.JAMF,
+        "policy_set_script",
+        "jamf_policy_set_script",
+        ActionKind.WRITE,
+        frozenset({Phase.EXECUTION}),
+        "Attach an uploaded script to the isolated test policy (default 1460)",
+    ),
+    ActionSpec(
+        McpSystem.JAMF,
+        "execute_test_policy",
+        "jamf_execute_test_policy",
+        ActionKind.WRITE,
+        frozenset({Phase.EXECUTION}),
+        "Execute isolated test policy via event arlo_test (MCP wrap; no shell)",
+    ),
+    ActionSpec(
         McpSystem.INTUNE,
         "read_compliance",
         "intune_read_compliance",
@@ -171,6 +195,12 @@ CATALOG_BY_TOOL: dict[str, ActionSpec] = {spec.tool_name: spec for spec in _CATA
 WRITE_ACTIONS: tuple[ActionSpec, ...] = tuple(s for s in _CATALOG if s.kind is ActionKind.WRITE)
 READ_ACTIONS: tuple[ActionSpec, ...] = tuple(s for s in _CATALOG if s.kind is ActionKind.READ)
 
+# Granular bindings of PRD §3.4 Jamf “apply approved … scripts” used by
+# `jamf_ops_agent` and the Policy 1460 test-loop (SAD AD-16, AD-18).
+JAMF_TEST_ACTION_TYPES: frozenset[str] = frozenset(
+    {"upload_script", "policy_set_script", "execute_test_policy"}
+)
+
 
 def qualified_tool_name(spec: ActionSpec) -> str:
     """Claude Agent SDK fully-qualified MCP tool name: `mcp__{server_name}__{tool}`.
@@ -204,6 +234,28 @@ def is_authorized_write(system: str, action_type: str) -> bool:
 def read_tool_names(phase: Phase) -> list[str]:
     """Qualified (`mcp__...`) read-tool names allowed in `phase`, for `allowed_tools`."""
     return sorted({qualified_tool_name(s) for s in READ_ACTIONS if phase in s.phases})
+
+
+def jamf_ops_tool_names(*, include_apply_profile: bool = False) -> list[str]:
+    """Qualified Jamf write tools bound to `jamf_ops_agent` (SAD §2 segregation)."""
+    action_types = ["upload_script", "policy_set_script", "execute_test_policy"]
+    if include_apply_profile:
+        action_types.append("apply_profile_or_script")
+    names: list[str] = []
+    for action_type in action_types:
+        spec = lookup("jamf", action_type)
+        if spec is not None:
+            names.append(qualified_tool_name(spec))
+    return sorted(names)
+
+
+def has_jamf_test_actions(frozen_actions: list[dict[str, object]]) -> bool:
+    """True when the frozen list includes Policy 1460 test-loop verbs."""
+    return any(
+        str(action.get("system", "")) == McpSystem.JAMF.value
+        and str(action.get("action_type", "")) in JAMF_TEST_ACTION_TYPES
+        for action in frozen_actions
+    )
 
 
 def write_tool_names_for_frozen_actions(frozen_actions: list[dict[str, object]]) -> set[str]:

@@ -22,17 +22,17 @@ from backend.app.domain.workflow_contracts import ExecuteApprovedInput
 from backend.app.schemas.proposal import ProposalPayload
 from backend.app.services.audit import append_audit_event
 from worker.activities.common import run_claude_query
-from worker.mcp.agents import coordinator_agents
+from worker.agents import specialist_agents
 from worker.mcp.claude_client import build_claude_options
 from worker.mcp.registry import build_mcp_servers
 from worker.pep import build_hooks
 
-_EXECUTOR_SYSTEM_PROMPT = """You are `arlo-executor`, ARLO's approved-plan executor (PRD \
-FR-P0-06). Apply exactly the enumerated `write_actions` from the approved proposal below using \
-your available write tools — nothing more, nothing that was not explicitly authorized. If a \
-write tool call fails or is denied, stop attempting further writes and report what happened; do \
-not retry around a denial. When you have applied every write you can, summarize what was \
-attempted and the outcome of each."""
+_EXECUTOR_SYSTEM_PROMPT = """You are `arlo_orchestrator` in Execution (PRD FR-P0-06). Apply \
+exactly the remaining enumerated `write_actions` from the approved proposal using your available \
+write tools — nothing more. Jamf Policy 1460 / arlo_test may already have been completed by \
+`jamf_ops_agent`. If a write tool call fails or is denied, stop attempting further writes and \
+report what happened; do not retry around a denial. When you have applied every write you can, \
+summarize what was attempted and the outcome of each."""
 
 
 @activity.defn(name="execute_approved")
@@ -65,7 +65,7 @@ async def execute_approved(input: ExecuteApprovedInput) -> dict:
     options = build_claude_options(
         system_prompt=_EXECUTOR_SYSTEM_PROMPT,
         allowed_tools=sorted(allowed_write_tools),
-        agents=coordinator_agents(writes=sorted(allowed_write_tools)),
+        agents=specialist_agents(writes=sorted(allowed_write_tools)),
         mcp_servers=build_mcp_servers(systems),
         hooks=build_hooks(
             arlo_id=input.arlo_id,

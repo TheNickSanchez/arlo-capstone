@@ -19,6 +19,7 @@ def test_sad_section_4_paths_respond() -> None:
         assert body["error"]["code"] == "unauthenticated"
         assert client.get("/api/v1/instances").status_code == 401
         assert client.get("/api/v1/instances/ARLO-1").status_code == 401
+        assert client.get("/api/v1/instances/ARLO-1/artifacts").status_code == 401
         assert client.get("/api/v1/instances/ARLO-1/audit").status_code == 401
         assert client.post("/api/v1/instances/ARLO-1/approve", json={"proposal_hash": "x"}).status_code == 401
         assert client.post("/api/v1/instances/ARLO-1/reject", json={"proposal_hash": "x"}).status_code == 401

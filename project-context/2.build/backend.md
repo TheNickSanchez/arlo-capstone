@@ -24,7 +24,8 @@ backend/app/
   api/v1/                      SAD §4 REST: instances, auth, webhooks
   db/                          asyncpg engine/pool, session, Alembic runner
   models/                      SQLAlchemy: users, instances, approvals, audit_events,
-                               learned_patterns, kb_articles (pgvector VECTOR(1536))
+                               learned_patterns, kb_articles (pgvector VECTOR(1536)),
+                               run_artifacts
   schemas/                     Pydantic request/response + evidence/proposal/validation
   services/                    spawn, HITL persist-before-Signal, audit append-only
   security/                    session cookie / Bearer HMAC token, password hash
@@ -34,9 +35,11 @@ backend/migrations/           Alembic; 0001_initial_schema
 worker/
   main.py                      Temporal worker entrypoint (task_queue=arlo-activities)
   workflows/remediation.py     ArloRemediationWorkflow + approval_decision Signal
-  activities/                  investigate, inspect_and_comment, generate_proposal,
-                               post_proposal_comment, execute_approved, validate_and_close,
-                               test_comment, mark_failed
+  agents/                      AgentDefinition specialists: orchestrator, discovery,
+                               script_writer, jamf_ops (SAD §2)
+  activities/                  investigate, write_script, inspect_and_comment, generate_proposal,
+                               post_proposal_comment, execute_jamf_test, execute_approved,
+                               validate_and_close, test_comment, mark_failed
   mcp/                         ClaudeSDKClient, registry (stdio/SSE), raw_client, stubs, kb_search,
                                adf.py + vendored adf_converter.py (Markdown → Jira ADF)
   pep.py                       PreToolUse / PostToolUse
@@ -53,7 +56,9 @@ Base path `/api/v1`. JSON. Auth required except `/health` and `/ready`.
 |---|---|---|
 | POST | `/instances` | Validate ticket; insert `instances` (`Investigating`); `start_workflow`; 201 `{ arlo_id, status }` |
 | GET | `/instances` | Grid; query `status`, `limit`, `offset` |
-| GET | `/instances/{arlo_id}` | Mapping, status, timestamps, proposal, approval summary |
+| GET | `/instances/{arlo_id}` | Mapping, status, timestamps, proposal, approval summary, `latest_artifacts` |
+| GET | `/instances/{arlo_id}/artifacts` | Run artifacts for `/runs/[arloId]` tabs; query `type` |
+| GET | `/instances/{arlo_id}/artifacts/{artifact_id}` | Single artifact body |
 | GET | `/instances/{arlo_id}/audit` | Append-only events, chronological |
 | POST | `/instances/{arlo_id}/approve` | Persist `approvals` then Signal; stale `proposal_hash` → 409, no Signal |
 | POST | `/instances/{arlo_id}/reject` | Persist + Signal; terminal `Rejected` |
@@ -88,12 +93,13 @@ API: `client.start_workflow(ArloRemediationWorkflow.run, RemediationWorkflowInpu
 Workflow (`worker/workflows/remediation.py`):
 
 1. If `jira_analysis_only`: Activity `inspect_and_comment` then complete (`Done`). No other MCP, no HITL wait, no execution.
-2. Else if `jira_beta_prod`: `investigate` → `generate_proposal` → `post_proposal_comment` → `wait_condition` (no endpoint writes until Signal)
+2. Else if `jira_beta_prod`: `investigate` → `write_script` → `generate_proposal` → `post_proposal_comment` → `wait_condition` (no endpoint writes until Signal)
 3. Else optional `post_smoke_test_comment` (when `smoke_test_enabled` is set at start time)
-4. `investigate` → `generate_proposal`
+4. `investigate` → `write_script` → `generate_proposal`
 5. `await workflow.wait_condition(lambda: self._decision is not None)` — worker released; no Claude/MCP held
 6. Signal `approval_decision`; Execution only if `action == approve` and hashes match
-7. `execute_approved` → `validate_and_close`
+7. If the frozen list includes Jamf test verbs: bounded Policy **1460** / `arlo_test` loop (`execute_jamf_test` → persist logs → `write_script` refactor → re-test; max `ARLO_SCRIPT_TEST_MAX_ATTEMPTS`)
+8. `execute_approved` → `validate_and_close`
 
 No auto-approve timer. Workflow code does not call LLM, MCP, or DB drivers. Lifecycle flags are resolved at `start_workflow` time (`resolve_lifecycle_flags`): `ARLO_JIRA_BETA_PROD` wins over `ARLO_JIRA_ANALYSIS_ONLY`; either mode disables the smoke-test comment.
 
@@ -107,7 +113,9 @@ No auto-approve timer. Workflow code does not call LLM, MCP, or DB drivers. Life
 
 - New `ClaudeSDKClient` per Activity (`worker/mcp/claude_client.py`); closed on completion. `tools=[]` (no filesystem/shell). `strict_mcp_config=True`. `permission_mode=dontAsk` (PEP is the gate).
 - `ClaudeAgentOptions(env=claude_sdk_environ())` so `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` reach the SDK subprocess (LiteLLM-compatible).
-- Specialists: `AgentDefinition` `arlo-investigator` / `arlo-executor` (`worker/mcp/agents.py`).
+- Specialists: `AgentDefinition` `arlo_orchestrator` / `discovery_agent` / `script_writer_agent` / `jamf_ops_agent` (`worker/agents/`). `worker/mcp/agents.py` re-exports `coordinator_agents` for compatibility.
+- `discovery_agent` tools = Investigation reads + `kb_search`. `script_writer_agent` tools = `[]`. `jamf_ops_agent` tools = `jamf_upload_script`, `jamf_policy_set_script`, `jamf_execute_test_policy` (∩ frozen list).
+- Run artifacts (`run_artifacts`) persist discovery packs, generated scripts, and test logs keyed by `arlo_id`. Next.js fetches `GET /api/v1/instances/{arlo_id}/artifacts` for the Script and Test Logs tabs.
 - MCP: HTTP/SSE when `*_MCP_URL` is set; else stdio command; else in-repo fixture stub (`worker/mcp/servers/*`).
 - Internal `kb_search`: in-process SDK MCP over `kb_articles`.
 - PEP: deny vendor writes unless phase is Executing (Activity `writes_enabled`) **and** tool ∈ frozen list. Policy deny is audited, never treated as success.
@@ -155,11 +163,12 @@ AppSec/git, webhook auto-spawn (P1), CrewAI, Temporal Cloud, live production dep
 - Spawn body `{ ticket_system: "jira"|"servicenow", ticket_id }`
 - Approve/Reject body `{ proposal_hash }` (409 on stale hash)
 - Error envelope `{ error: { code, message, arlo_id } }`
-- Poll GET list/detail/audit every 2–5s while non-terminal
+- Poll GET list/detail/artifacts/audit every 2–5s while non-terminal
+- Detail includes `latest_artifacts` for Proposal / Script / Test Logs first paint
 
 ## Sources
 
-1. `project-context/1.define/sad.md` §1–§4, §6, AD-1–AD-15 (Temporal, Claude in Activities, MCP, FastAPI, PostgreSQL, HITL Signal, Central Memory, Vector KB).
+1. `project-context/1.define/sad.md` §1–§4, §6, AD-1–AD-18 (Temporal, Claude in Activities, MCP, FastAPI, PostgreSQL, HITL Signal, specialists, `run_artifacts`, Policy 1460 loop).
 2. `project-context/1.define/prd.md` §3–§5, FR-P0-01–10, UI-P0 status vocabulary, MCP authorized actions.
 3. `project-context/2.build/setup.md` (layout, env names, Compose, LiteLLM routing).
 4. `.cursor/rules/adapter-claude-agent-sdk.mdc` (ClaudeSDKClient, hooks, least-privilege tools, session-per-Activity).
@@ -177,7 +186,9 @@ AppSec/git, webhook auto-spawn (P1), CrewAI, Temporal Cloud, live production dep
 - Capstone MCP stubs over stdio are acceptable when `*_MCP_URL` is empty; they still persist fixture writes so the smoke test is observable.
 - The smoke-test Jira comment is an **operator-authorized HITL exception** for pipeline verification only. It is not a remediation write, is not in investigator `allowed_tools`, and is gated by `ARLO_SMOKE_TEST_ENABLED` / `smoke_test_enabled` on the Workflow input.
 - The Jira-only analysis slice (`ARLO_JIRA_ANALYSIS_ONLY`) is a second **operator-authorized** exception: inspect + analysis comment, then stop. It does not enable Jamf/Intune/ServiceNow, HITL execution, or ticket close. `Investigating` → `Done` is legal only for this completion path; `Investigating` → `Executing` remains forbidden.
-- `ARLO_JIRA_BETA_PROD` is a third **operator-authorized** exception for the discovery/proposal Jira comment (same `jira_post_comment` action, still not in investigator `allowed_tools`). It enables Jamf/Intune **reads** and sleeps at `Awaiting Approval`. It does not authorize endpoint writes before the approval Signal. No new PRD §3.4 tools were added; catalog fields are a richer return shape on existing compliance reads.
+- `ARLO_JIRA_BETA_PROD` is a third **operator-authorized** exception for the discovery/proposal Jira comment (same `jira_post_comment` action, still not in investigator `allowed_tools`). It enables Jamf/Intune **reads** and sleeps at `Awaiting Approval`. It does not authorize endpoint writes before the approval Signal.
+- `jamf_upload_script`, `jamf_policy_set_script`, and `jamf_execute_test_policy` are Build-time bindings of PRD §3.4 “Apply approved configuration profiles or scripts.” Policy **1460** / event `arlo_test` are env-overridable isolated test-policy identifiers. The test-loop Activity uses `raw_client` for those three tools **after** a frozen-list check (same HITL gate as PEP; no shell).
+- `run_artifacts` rows are append-only. Script refactors increment `attempt`.
 - LiteLLM is optional; empty `ANTHROPIC_BASE_URL` means the SDK uses its default Anthropic endpoint.
 - `kb_articles` ingest is setup/admin, not an Investigation tool. Embeddings require `EMBEDDING_*`; KB miss is a declared gap, not fail-open.
 - Local Compose Postgres password `arlo` is a documented capstone default, not a production secret.
@@ -198,6 +209,25 @@ Carried from PRD/SAD; not resolved here:
 9. When to restore the full HITL remediation path after the Jira-analysis-only slice.
 10. Whether `ARLO_JIRA_BETA_PROD` should remain a flag after the capstone demo or become the default spawn path (analysis-only stays the inspect-and-stop slice).
 11. Live Jamf/Intune MCP payloads may omit stub `catalog` fields; gap records are then required rather than inventing EA/policy inventory.
+12. Whether `@product-mgr` should split PRD §3.4 Jamf write into explicit upload / policy-set / execute-test rows (SAD binds them as granular tools of the existing write).
+13. Whether a failing Policy 1460 test should return to Awaiting Approval (P1 request-changes) instead of Failed after the attempt bound.
+
+## Audit
+
+- **Timestamp:** 2026-09-01T23:49:16Z (operator local 2026-09-01 ~16:49 PDT)
+- **Persona id:** `backend-eng`
+- **Action:** `define-agents` + persist artifacts (SAD specialist topology)
+- **Output path:** `project-context/2.build/backend.md`; `worker/agents/`; `worker/activities/write_script.py`; `worker/activities/execute_jamf_test.py`; `backend/app/models/run_artifact.py`; `backend/migrations/versions/0002_run_artifacts.py`
+- **Resolved AAMAD_TARGET_RUNTIME:** `claude-agent-sdk` via `aamad.config.yml` (`AAMAD_TARGET_RUNTIME` unset in this shell)
+- **Config loaded:** `aamad.config.yml`
+- **Inputs read:** `.cursor/agents/backend-eng.md`; SAD §2/§4/§6 AD-16–18; PRD §3.4 Jamf write; `mcp-tool-catalog.mdc`; existing Activities and catalog
+- **Changes:** four `AgentDefinition` modules; Jamf test-policy tool bindings of the existing PRD write; `run_artifacts` + list/detail APIs; Temporal `write_script` + Policy 1460 test-loop; specialist `allowed_tools` segregation
+- **Prompt Trace:** omitted. Agent prompts are the SAD-normative strings in `worker/agents/`; no secret values; no `.env` read into artifacts.
+- **Model / temperature / max_tokens:** Cursor Grok 4.6 interactive session. Runtime Activities use `CLAUDE_MODEL` from env; `write_script` falls back to a deterministic template if Claude is unavailable.
+- **Tool usage:** Read (SAD, PRD, catalog, Activities); Write (agents, catalog, stubs, schema, Activities, Workflow, tests, this file).
+- **Write method:** in-place under `backend/`, `worker/`, `project-context/2.build/backend.md`.
+- **Prohibited actions honored:** no new PRD product verbs (Jamf tools bind the existing apply-scripts write); no Bash/`sudo` on the SDK agent; no vendor writes before HITL; no secret values in artifacts.
+- **Self-check (required headings):** Sources; Assumptions; Open Questions; Audit.
 
 ## Audit
 

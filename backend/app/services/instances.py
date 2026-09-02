@@ -25,6 +25,7 @@ from backend.app.models.audit_event import AuditEvent
 from backend.app.models.instance import Instance
 from backend.app.schemas.instance import ApprovalSummary, InstanceDetail, InstanceSummary
 from backend.app.schemas.proposal import ProposalPayload
+from backend.app.services.artifacts import latest_artifacts
 from backend.app.services.audit import append_audit_event
 
 _TERMINAL_STATUS_VALUES = [s.value for s in InstanceStatus if is_terminal(s)]
@@ -160,6 +161,7 @@ async def get_instance_detail(session: AsyncSession, arlo_id: str) -> InstanceDe
         )
 
     proposal = ProposalPayload(**instance.proposal_json) if instance.proposal_json else None
+    artifacts = await latest_artifacts(session, arlo_id)
 
     return InstanceDetail(
         arlo_id=instance.arlo_id,
@@ -171,6 +173,7 @@ async def get_instance_detail(session: AsyncSession, arlo_id: str) -> InstanceDe
         proposal=proposal,
         proposal_hash=instance.proposal_hash,
         latest_approval=latest_approval,
+        latest_artifacts=artifacts,
     )
 
 

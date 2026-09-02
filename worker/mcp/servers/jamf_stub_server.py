@@ -28,6 +28,9 @@ _SEED: dict[str, Any] = {
         },
     },
     "applied_profiles": [],
+    "uploaded_scripts": [],
+    "policy_scripts": {},
+    "test_runs": [],
     "catalog": {
         "policies": ["FileVault-Enforce", "Gatekeeper-Required"],
         "smart_groups": ["FileVault-NonCompliant", "macOS-Managed"],
@@ -82,6 +85,55 @@ def jamf_apply_profile(asset_tag: str, profile_id: str) -> dict[str, Any]:
     data["applied_profiles"].append(record)
     _save(data)
     return {"ok": True, **record}
+
+
+@app.tool()
+def jamf_upload_script(name: str, contents: str, os: str = "macOS") -> dict[str, Any]:
+    """Upload approved script content (write; post-HITL only)."""
+    data = _store()
+    scripts = data.setdefault("uploaded_scripts", [])
+    script_id = f"script-{len(scripts) + 1}"
+    record = {"script_id": script_id, "name": name, "contents": contents, "os": os}
+    scripts.append(record)
+    _save(data)
+    return {"ok": True, **record}
+
+
+@app.tool()
+def jamf_policy_set_script(policy_id: int, script_id: str) -> dict[str, Any]:
+    """Attach an uploaded script to a Jamf policy (write; post-HITL only)."""
+    data = _store()
+    policies = data.setdefault("policy_scripts", {})
+    policies[str(policy_id)] = script_id
+    _save(data)
+    return {"ok": True, "policy_id": policy_id, "script_id": script_id}
+
+
+@app.tool()
+def jamf_execute_test_policy(policy_id: int = 1460, event: str = "arlo_test") -> dict[str, Any]:
+    """Run the isolated test policy (MCP wrap of `sudo jamf policy -event arlo_test`)."""
+    data = _store()
+    script_id = data.get("policy_scripts", {}).get(str(policy_id))
+    scripts = data.get("uploaded_scripts", [])
+    script = next((row for row in scripts if row.get("script_id") == script_id), None)
+    contents = str((script or {}).get("contents") or "")
+    # Deterministic fixture: embed ARLO_TEST_FAIL to simulate a non-zero exit.
+    exit_code = 1 if (not contents or "ARLO_TEST_FAIL" in contents) else 0
+    stdout = "arlo_test ok" if exit_code == 0 else ""
+    stderr = "" if exit_code == 0 else "arlo_test failed: script error"
+    record = {
+        "ok": exit_code == 0,
+        "policy_id": policy_id,
+        "event": event,
+        "script_id": script_id,
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "command": f"sudo jamf policy -event {event}",
+    }
+    data.setdefault("test_runs", []).append(record)
+    _save(data)
+    return record
 
 
 if __name__ == "__main__":

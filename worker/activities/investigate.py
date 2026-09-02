@@ -27,9 +27,10 @@ from backend.app.domain.workflow_contracts import RemediationWorkflowInput
 from backend.app.models.learned_pattern import LearnedPattern
 from backend.app.schemas.evidence import EvidencePack
 from backend.app.schemas.proposal import EvidenceGap, KbCitation, PatternCitation
+from backend.app.services.artifacts import persist_artifact
 from backend.app.services.audit import append_audit_event
 from worker.activities.common import record_diagnostic, run_claude_query
-from worker.mcp.agents import coordinator_agents
+from worker.agents import DISCOVERY_AGENT_ID, specialist_agents
 from worker.mcp.claude_client import build_claude_options
 from worker.mcp.kb_search_server import build_kb_search_server, kb_search_direct
 from worker.mcp.raw_client import McpToolCallError, call_tool
@@ -38,7 +39,7 @@ from worker.pep import build_hooks
 
 logger = logging.getLogger("arlo.worker.activities.investigate")
 
-_INVESTIGATOR_SYSTEM_PROMPT = """You are `arlo-investigator`, ARLO's read-only evidence gatherer \
+_INVESTIGATOR_SYSTEM_PROMPT = """You are `discovery_agent`, ARLO's read-only evidence gatherer \
 (PRD FR-P0-02). Ground every claim in a tool result already shown to you or one you fetch now \
 via your read-only MCP tools; never invent device, asset, or ticket state. If a system is \
 unreachable or a fact is unavailable, record it as an entry in `evidence_gaps` instead of \
@@ -204,7 +205,7 @@ async def investigate(input: RemediationWorkflowInput) -> dict:
     options = build_claude_options(
         system_prompt=system_prompt,
         allowed_tools=read_tool_names(Phase.INVESTIGATION),
-        agents=coordinator_agents(),
+        agents=specialist_agents(),
         mcp_servers={
             **build_mcp_servers([McpSystem.JIRA, McpSystem.SERVICENOW, McpSystem.JAMF, McpSystem.INTUNE]),
             "kb": build_kb_search_server(),
@@ -245,7 +246,18 @@ async def investigate(input: RemediationWorkflowInput) -> dict:
             )
         raise
 
+    pack = evidence.model_dump(mode="json")
     async with session_scope() as session:
+        await persist_artifact(
+            session,
+            arlo_id=arlo_id,
+            artifact_type="discovery_pack",
+            created_by_agent=DISCOVERY_AGENT_ID,
+            phase=InstanceStatus.INVESTIGATING.value,
+            attempt=0,
+            content_json=pack,
+            metadata_json={"ticket_key": ticket_key, "platform": evidence.platform},
+        )
         await append_audit_event(
             session,
             arlo_id=arlo_id,
@@ -258,4 +270,4 @@ async def investigate(input: RemediationWorkflowInput) -> dict:
             ),
         )
 
-    return evidence.model_dump(mode="json")
+    return pack

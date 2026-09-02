@@ -3,6 +3,8 @@
 POST   /api/v1/instances
 GET    /api/v1/instances
 GET    /api/v1/instances/{arlo_id}
+GET    /api/v1/instances/{arlo_id}/artifacts
+GET    /api/v1/instances/{arlo_id}/artifacts/{artifact_id}
 GET    /api/v1/instances/{arlo_id}/audit
 POST   /api/v1/instances/{arlo_id}/approve
 POST   /api/v1/instances/{arlo_id}/reject
@@ -17,6 +19,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_session
+from backend.app.schemas.artifact import ArtifactListResponse, ArtifactOut
 from backend.app.schemas.instance import (
     ApproveRequest,
     AuditEventOut,
@@ -30,6 +33,7 @@ from backend.app.schemas.instance import (
     RejectRequest,
 )
 from backend.app.security.dependencies import CurrentUser, get_current_user
+from backend.app.services import artifacts as artifacts_service
 from backend.app.services import instances as instances_service
 
 router = APIRouter(tags=["instances"])
@@ -71,6 +75,31 @@ async def get_instance(
     user: CurrentUser = Depends(get_current_user),
 ) -> InstanceDetail:
     return await instances_service.get_instance_detail(session, arlo_id)
+
+
+@router.get("/instances/{arlo_id}/artifacts", response_model=ArtifactListResponse)
+async def list_artifacts(
+    arlo_id: str,
+    type: str | None = Query(default=None, alias="type"),
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> ArtifactListResponse:
+    await instances_service.get_instance_or_404(session, arlo_id)
+    rows = await artifacts_service.list_artifacts(session, arlo_id, artifact_type=type)
+    items = [artifacts_service.artifact_out(row) for row in rows]
+    return ArtifactListResponse(items=items, total=len(items))
+
+
+@router.get("/instances/{arlo_id}/artifacts/{artifact_id}", response_model=ArtifactOut)
+async def get_artifact(
+    arlo_id: str,
+    artifact_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> ArtifactOut:
+    await instances_service.get_instance_or_404(session, arlo_id)
+    row = await artifacts_service.get_artifact(session, arlo_id, artifact_id)
+    return artifacts_service.artifact_out(row)
 
 
 @router.get("/instances/{arlo_id}/audit", response_model=AuditListResponse)

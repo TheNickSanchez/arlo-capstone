@@ -6,9 +6,10 @@ are referenced by registered string name only. Lifecycle:
     if `jira_analysis_only`: inspect_and_comment → Done (no HITL, no other MCP)
     elif `jira_beta_prod`: investigate → generate_proposal → post_proposal_comment
     → wait_condition(Signal `approval_decision`) — no endpoint writes until Signal
-    else: smoke-test (optional) → investigate → generate_proposal
+    else: smoke-test (optional) → investigate → write_script → generate_proposal
     → wait_condition(Signal `approval_decision`)
-    → execute_approved (approve + hash match only) → validate_and_close
+    → Policy 1460 test-loop (if frozen Jamf test verbs) → execute_approved
+      (approve + hash match only) → validate_and_close
 
 No auto-approve timers (PRD: no auto-approve). Wake paths are the
 `approval_decision` Signal only (approve / reject / cancel).
@@ -27,11 +28,14 @@ with workflow.unsafe.imports_passed_through():
     from backend.app.domain.workflow_contracts import (
         ApprovalDecision,
         ExecuteApprovedInput,
+        ExecuteJamfTestInput,
         GenerateProposalInput,
         MarkFailedInput,
         PostProposalCommentInput,
         RemediationWorkflowInput,
         ValidateAndCloseInput,
+        WriteScriptInput,
+        proposal_has_jamf_test_actions,
     )
 
 _TRANSIENT_RETRY_POLICY = RetryPolicy(
@@ -116,6 +120,27 @@ class ArloRemediationWorkflow:
         if not investigate_stage.ok:
             return "Failed"
         evidence_pack = investigate_stage.value
+        evidence = evidence_pack if isinstance(evidence_pack, dict) else {}
+
+        script: dict = {}
+        # Script draft is best-effort: a missing script is a gap, not a Failed
+        # investigation (SAD §2 step 3 skip when OS is neither macOS nor Windows).
+        try:
+            script_value = await workflow.execute_activity(
+                "write_script",
+                WriteScriptInput(
+                    arlo_id=input.arlo_id,
+                    ticket_key=input.ticket_key,
+                    evidence_pack=evidence,
+                    attempt=0,
+                ),
+                start_to_close_timeout=investigation_timeout,
+                retry_policy=_TRANSIENT_RETRY_POLICY,
+            )
+            if isinstance(script_value, dict):
+                script = script_value
+        except ActivityError:
+            pass
 
         proposal_stage = await self._run_stage(
             input.arlo_id,
@@ -171,6 +196,72 @@ class ArloRemediationWorkflow:
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
             return "Failed"
+
+        proposal_dict = proposal if isinstance(proposal, dict) else {}
+        if proposal_has_jamf_test_actions(proposal_dict):
+            script_contents = script.get("contents") if script else None
+            filename = str(script.get("filename") or "arlo-remediation.sh")
+            script_os = str(script.get("platform") or "macOS")
+            test_ok = False
+            max_attempts = input.script_test_max_attempts
+            for attempt in range(max_attempts):
+                test_stage = await self._run_stage(
+                    input.arlo_id,
+                    "Executing",
+                    "execute_jamf_test",
+                    ExecuteJamfTestInput(
+                        arlo_id=input.arlo_id,
+                        ticket_key=input.ticket_key,
+                        proposal=proposal_dict,
+                        attempt=attempt,
+                        policy_id=input.jamf_test_policy_id,
+                        event=input.jamf_test_event,
+                        script_contents=script_contents,
+                        script_filename=filename,
+                        script_os=script_os,
+                    ),
+                    execution_timeout,
+                )
+                if not test_stage.ok:
+                    return "Failed"
+                last_test = test_stage.value if isinstance(test_stage.value, dict) else {}
+                if int(last_test.get("exit_code", 1)) == 0:
+                    test_ok = True
+                    break
+                if attempt + 1 >= max_attempts:
+                    break
+                refactor_stage = await self._run_stage(
+                    input.arlo_id,
+                    "Executing",
+                    "write_script",
+                    WriteScriptInput(
+                        arlo_id=input.arlo_id,
+                        ticket_key=input.ticket_key,
+                        evidence_pack=evidence,
+                        test_log=last_test,
+                        attempt=attempt + 1,
+                        prior_script=script_contents,
+                    ),
+                    investigation_timeout,
+                )
+                if not refactor_stage.ok:
+                    return "Failed"
+                if isinstance(refactor_stage.value, dict):
+                    script = refactor_stage.value
+                    script_contents = script.get("contents")
+                    filename = str(script.get("filename") or filename)
+            if not test_ok:
+                await workflow.execute_activity(
+                    "mark_failed",
+                    MarkFailedInput(
+                        arlo_id=input.arlo_id,
+                        phase="Executing",
+                        reason="Policy 1460 arlo_test failed after max attempts",
+                    ),
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=3),
+                )
+                return "Failed"
 
         execute_stage = await self._run_stage(
             input.arlo_id,

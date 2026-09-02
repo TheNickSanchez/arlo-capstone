@@ -18,6 +18,7 @@ from temporalio.worker import Worker
 
 from backend.app.config import settings
 from worker.activities.execute_approved import execute_approved
+from worker.activities.execute_jamf_test import execute_jamf_test
 from worker.activities.generate_proposal import generate_proposal
 from worker.activities.inspect_and_comment import inspect_and_comment
 from worker.activities.investigate import investigate
@@ -25,6 +26,7 @@ from worker.activities.lifecycle import mark_failed
 from worker.activities.post_proposal_comment import post_proposal_comment
 from worker.activities.test_comment import post_smoke_test_comment
 from worker.activities.validate_and_close import validate_and_close
+from worker.activities.write_script import write_script
 from worker.mcp.jira_cloud import live_jira_configured
 from worker.workflows.remediation import ArloRemediationWorkflow
 
@@ -34,8 +36,10 @@ logger = logging.getLogger("arlo.worker")
 ACTIVITIES = (
     investigate,
     inspect_and_comment,
+    write_script,
     generate_proposal,
     post_proposal_comment,
+    execute_jamf_test,
     execute_approved,
     validate_and_close,
     post_smoke_test_comment,
